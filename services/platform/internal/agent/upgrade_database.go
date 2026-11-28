@@ -18,21 +18,24 @@ import (
 func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application) error {
 	for _, check := range []struct{ sql, want, message string }{
 		// By name: a database its owner marked as a template is still one the upgrade would lose.
-		{"SELECT count(*) FROM pg_database WHERE datname NOT IN (current_database(),'postgres','template0','template1')", "0", "additional databases require a separate recipe"},
+		// template0 is always oid 4, so another database a superuser names template0 is one too.
+		{"SELECT count(*) FROM pg_database WHERE oid <> 4 AND datname NOT IN (current_database(),'postgres','template1')", "0", "additional databases require a separate recipe"},
 		{"SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default','pg_global')", "0", "custom tablespaces are unsupported"},
 		{"SELECT count(*) FROM pg_prepared_xacts", "0", "prepared transactions are unsupported"},
 		{"SELECT count(*) FROM pg_replication_slots", "0", "replication slots are unsupported"},
 		{"SELECT count(*) FROM pg_subscription", "0", "subscriptions are unsupported"},
-		// The upgrade restores the database into a cluster initdb made, so the maintenance database
-		// and template1 must hold only what initdb gives them. Before the owner model the database
-		// user is a superuser and can change either.
-		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE datname IN (current_database(),'postgres','template1'))", "0", "database or role settings require a separate recipe"},
+		// The upgrade restores the database into a cluster initdb made, so the maintenance database,
+		// template1 and template0, always oid 4, must hold only what initdb gives them. Before the
+		// owner model the database user is a superuser and can change any of them, template0 too
+		// once it opens it, and close it again.
+		{"SELECT count(*) FROM pg_db_role_setting WHERE setdatabase=0 OR setdatabase IN (SELECT oid FROM pg_database WHERE oid = 4 OR datname IN (current_database(),'postgres','template1'))", "0", "database or role settings require a separate recipe"},
 		// The database user owns the database; the bootstrap superuser, the database user too
-		// before the owner model, owns the maintenance database and template1, which stays a
-		// template that accepts connections. Each keeps the grants it starts with: the default,
-		// and for template1 initdb's, which takes TEMPORARY from PUBLIC. An ACL that only spells
-		// those out, as a restore's grant and revoke leaves one, is no custom privilege.
-		{"SELECT count(*) FROM (SELECT d.*, coalesce(datacl, acldefault('d',datdba)) AS acl, CASE WHEN datname='template1' THEN ARRAY[makeaclitem(0,datdba,'CONNECT',false), makeaclitem(datdba,datdba,'CREATE,TEMPORARY,CONNECT',false)] ELSE acldefault('d',datdba) END AS initial FROM pg_database d WHERE datname IN (current_database(),'postgres','template1')) d WHERE NOT (acl @> initial AND acl <@ initial) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR datname='template1' AND NOT (datistemplate AND datallowconn) OR shobj_description(oid,'pg_database') IS NOT NULL AND shobj_description(oid,'pg_database') IS DISTINCT FROM CASE datname WHEN 'postgres' THEN 'default administrative connection database' WHEN 'template1' THEN 'default template for new databases' END", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
+		// before the owner model, owns the others. The maintenance database isn't a template and
+		// accepts connections, template1 is a template that accepts them, and template0 is one
+		// that doesn't, under its own name. Each keeps the grants it starts with: the default,
+		// and for the templates initdb's, which takes TEMPORARY from PUBLIC. An ACL that only
+		// spells those out, as a restore's grant and revoke leaves one, is no custom privilege.
+		{"SELECT count(*) FROM (SELECT d.*, coalesce(datacl, acldefault('d',datdba)) AS acl, CASE WHEN oid = 4 OR datname='template1' THEN ARRAY[makeaclitem(0,datdba,'CONNECT',false), makeaclitem(datdba,datdba,'CREATE,TEMPORARY,CONNECT',false)] ELSE acldefault('d',datdba) END AS initial FROM pg_database d WHERE oid = 4 OR datname IN (current_database(),'postgres','template1')) d WHERE NOT (acl @> initial AND acl <@ initial) OR datconnlimit<>-1 OR datdba<>CASE WHEN datname=current_database() THEN (SELECT oid FROM pg_roles WHERE rolname=" + quoteLiteral(a.Postgres.Username) + ") ELSE 10 END OR oid = 4 AND (datname<>'template0' OR NOT (datistemplate AND NOT datallowconn)) OR datname='template1' AND NOT (datistemplate AND datallowconn) OR datname='postgres' AND datname<>current_database() AND (datistemplate OR NOT datallowconn) OR shobj_description(oid,'pg_database') IS NOT NULL AND shobj_description(oid,'pg_database') IS DISTINCT FROM CASE WHEN oid = 4 THEN 'unmodifiable empty database' WHEN datname='postgres' THEN 'default administrative connection database' WHEN datname='template1' THEN 'default template for new databases' END", "0", "custom database privileges, ownership, comments or limits require a separate recipe"},
 	} {
 		raw, err := e.pgQuery(ctx, db, a, check.sql)
 		if err != nil || strings.TrimSpace(string(raw)) != check.want {

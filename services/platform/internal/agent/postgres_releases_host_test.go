@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -245,7 +246,17 @@ RESET ROLE;`); err != nil {
 	copiedDatabase := *a.Postgres
 	copiedDatabase.Database = "copied"
 	copied.Postgres = &copiedDatabase
-	var copiedFiles, movedFiles map[string]string
+	// PLAT-574. CREATE DATABASE lets a role that may create databases choose the oid, so one
+	// rebuilt early in the step can be dropped and made again under its oid from template1 before
+	// template1's own rebuild. Databases are listed by oid as text, so this one's, chosen from 16384
+	// to 19999, comes before template1's, 1.
+	recreated := a
+	recreatedDatabase := *a.Postgres
+	recreatedDatabase.Database = "recreated"
+	recreated.Postgres = &recreatedDatabase
+	query(`CREATE DATABASE recreated OID 19999 TEMPLATE template1`)
+	firstFiles := files(updated, recreated)
+	var copiedFiles, movedFiles, recreatedFiles map[string]string
 	moved := false
 	e.Point = func(point string) {
 		switch {
@@ -256,12 +267,21 @@ RESET ROLE;`); err != nil {
 		case point == "postgres-reindex-read a=b" && !moved:
 			moved = true
 			query(`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `ALTER DATABASE decoy RENAME TO "a=b"`)
+		case point == "postgres-reindex-read template1" && recreatedFiles == nil:
+			if files(updated, recreated)["unbounded"] == firstFiles["unbounded"] {
+				t.Fatal("the database to make again was not rebuilt before template1")
+			}
+			query(`DROP DATABASE recreated`, `CREATE DATABASE recreated OID 19999 TEMPLATE template1`)
+			recreatedFiles = files(updated, recreated)
 		}
 	}
 	note, err = e.reindexPostgres(ctx, after, begin)
 	e.Point = nil
-	if err != nil || !strings.Contains(note, `"a=b moved".public.records_slot_excl`) || strings.Contains(note, "did not finish") || steps != 2 || !moved {
+	if err != nil || !strings.Contains(note, `"a=b moved".public.records_slot_excl`) || strings.Contains(note, "did not finish") || steps != 2 || !moved || recreatedFiles == nil {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
+	}
+	if got := files(updated, recreated); got["unbounded"] == recreatedFiles["unbounded"] || got["plain"] != recreatedFiles["plain"] {
+		t.Errorf("a database made again under its oid from template1 during the rebuild was not rebuilt: %v, was %v", got, recreatedFiles)
 	}
 	query(`ALTER DATABASE "a=b" RENAME TO decoy`, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`)
 	if got := files(updated, other); got["unbounded"] == movedFiles["unbounded"] || got["plain"] != movedFiles["plain"] {
@@ -270,7 +290,7 @@ RESET ROLE;`); err != nil {
 	if got := files(updated, copied); got["unbounded"] == copiedFiles["unbounded"] || got["plain"] != copiedFiles["plain"] {
 		t.Errorf("a database copied from template1 during the rebuild was not rebuilt: %v, was %v", got, copiedFiles)
 	}
-	query(`DROP DATABASE copied`, `DROP DATABASE decoy`)
+	query(`DROP DATABASE copied`, `DROP DATABASE decoy`, `DROP DATABASE recreated`)
 	for name, application := range databases {
 		got, was := files(updated, application), initial[name]
 		if _, left := got["unbounded_ccnew"]; left {
@@ -330,16 +350,77 @@ RESET ROLE;`); err != nil {
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'broken (Billing), ledger'`); err != nil {
 		t.Fatal(err)
 	}
+	// PLAT-572. template0 is always oid 4: a closed database a superuser names template0, once the
+	// real one has another name, is named like any other, and the real one isn't.
+	query(`CREATE DATABASE stale TEMPLATE template0`, `ALTER DATABASE stale ALLOW_CONNECTIONS false`, `ALTER DATABASE template0 RENAME TO "template0 kept"`, `ALTER DATABASE stale RENAME TO template0`)
+	// PLAT-585. A database's name is in the encoding of the one it was made from, so from a LATIN1
+	// database "café" is no UTF-8. It is still rebuilt, and named with the byte escaped.
+	query(`CREATE DATABASE latin TEMPLATE template0 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C'`)
+	latin := a
+	latinDatabase := *a.Postgres
+	latinDatabase.Database = "latin"
+	latin.Postgres = &latinDatabase
+	inLatin := pgClient{container: updated, env: []string{"PGCLIENTENCODING=UTF8"}}
+	if _, err = e.pgQuery(ctx, inLatin, latin, `CREATE DATABASE "café" TEMPLATE template1`); err != nil {
+		t.Fatal(err)
+	}
+	cafe := a
+	cafeDatabase := *a.Postgres
+	cafeDatabase.Database = databaseURI("caf\xe9")
+	cafe.Postgres = &cafeDatabase
+	cafeFiles := files(updated, cafe)
+	// A DROP DATABASE interrupted between the rebuild's read of a database and its rebuild marks
+	// the row invalid in place, keeping its oid and xmin. The failed rebuild then names it as
+	// invalid, not the step as unfinished. Here the drop waits on a held lock on pg_tablespace,
+	// which it takes after marking the row, until its statement timeout cancels it.
+	query(`CREATE DATABASE halted TEMPLATE template0`)
+	halted := false
+	e.Point = func(point string) {
+		if point != "postgres-reindex-read halted" || halted {
+			return
+		}
+		halted = true
+		holder, err := e.Docker.ExecCreate(ctx, updated, client.ExecCreateOptions{Cmd: []string{"psql", "-XAt", "-U", "app", "-d", "app", "-c", "BEGIN; LOCK pg_tablespace IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(60); COMMIT;"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = e.Docker.ExecStart(ctx, holder.ID, client.ExecStartOptions{Detach: true}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 50; i++ {
+			if raw, _ := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT count(*) FROM pg_locks WHERE relation = 'pg_tablespace'::regclass AND mode = 'AccessExclusiveLock' AND granted"); strings.TrimSpace(string(raw)) != "0" {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if e.containerExec(ctx, pgClient{container: updated}, io.Discard, "psql", "-XAtq", "-v", "ON_ERROR_STOP=1", "-U", "app", "-d", "app", "-c", "SET statement_timeout = '500ms'", "-c", "DROP DATABASE halted") == nil {
+			t.Fatal("the drop to interrupt finished")
+		}
+		query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'BEGIN; LOCK pg_tablespace%'`)
+		if raw, _ := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT datconnlimit FROM pg_database WHERE datname = 'halted'"); strings.TrimSpace(string(raw)) != "-2" {
+			t.Fatalf("the interrupted drop left the database's connection limit %q", raw)
+		}
+	}
 	served := files(updated, a)
 	if err = e.Journal.forgetPostgresData(volume); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+") are invalid") || strings.Contains(note, "did not finish") {
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if err != nil || !halted || !strings.Contains(note, "do not accept connections") || !strings.Contains(note, "closed (") || !strings.Contains(note, "template0 (") || strings.Contains(note, "kept") || !strings.Contains(note, `"broken (Billing), ledger" (`+a.Name+"), halted ("+a.Name+") are invalid") || !strings.Contains(note, `"caf\xe9".public.records_slot_excl`) || strings.Contains(note, "did not finish") {
 		t.Fatalf("a closed or invalid database was not named: %q, %v", note, err)
 	}
 	if files(updated, a)["unbounded"] == served["unbounded"] {
 		t.Fatal("an invalid database kept the others from being rebuilt")
 	}
+	if got := files(updated, cafe); got["unbounded"] == cafeFiles["unbounded"] || got["plain"] != cafeFiles["plain"] {
+		t.Errorf("a database whose name isn't UTF-8 was not rebuilt: %v, was %v", got, cafeFiles)
+	}
+	query(`ALTER DATABASE template0 RENAME TO stale`, `ALTER DATABASE "template0 kept" RENAME TO template0`, `DROP DATABASE stale`)
+	if _, err = e.pgQuery(ctx, inLatin, latin, `DROP DATABASE "café"`); err != nil {
+		t.Fatal(err)
+	}
+	query(`DROP DATABASE latin`)
 	// Storage with no record keeps the release the rebuild assumed beside the one serving it.
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != oldestPostgres(major).Image || record.Served != current.Image {
 		t.Fatalf("a rebuild that left a closed and an invalid database recorded %+v", record)
@@ -350,7 +431,23 @@ RESET ROLE;`); err != nil {
 	if _, err = e.pgQuery(ctx, pgClient{container: updated}, a, `DROP DATABASE "broken (Billing), ledger"`); err != nil {
 		t.Fatal(err)
 	}
-	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {
+	query(`DROP DATABASE halted`)
+	// A database named early in the step and dropped before its last listing isn't named, so the
+	// record still moves on. Its oid, chosen from 16384 to 19999, is listed before template1's.
+	query(`CREATE DATABASE gone OID 19998 TEMPLATE template0`, `ALTER DATABASE gone ALLOW_CONNECTIONS false`)
+	gone := false
+	e.Point = func(point string) {
+		if point == "postgres-reindex-read template1" && !gone {
+			gone = true
+			query(`DROP DATABASE gone`)
+		}
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if !gone {
+		t.Fatal("the database to drop was not dropped during the rebuild")
+	}
+	if err != nil || strings.Contains(note, "do not accept connections") || strings.Contains(note, "invalid") || files(updated, shut)["unbounded"] == was["unbounded"] {
 		t.Fatalf("the reopened database was not rebuilt: %q, %v", note, err)
 	}
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
