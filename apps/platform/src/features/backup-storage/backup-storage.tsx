@@ -39,10 +39,19 @@ export function BackupStorage({
   const destinations = useQuery({
     ...backupDestinationsOptions(workspaceId),
     enabled: managed,
-    // Keys are made and revoked by management, in the background.
+    // Keys are made, replaced and revoked by management, in the background: a rotation that was
+    // asked for or is due has no new key yet, unless making it is failing and backing off, and one
+    // under way has two active until its server installs the new one.
     refetchInterval: (query) =>
-      query.state.data?.some((d) =>
-        d.keys.some((k) => k.state === "minting" || k.state === "revoking"),
+      query.state.data?.some(
+        (d) =>
+          d.rotationRequested ||
+          (!d.remintError &&
+            !!d.rotationDueAt &&
+            Date.parse(d.rotationDueAt) <= Date.now()) ||
+          d.keys.some((k) => k.state === "minting" || k.state === "revoking") ||
+          d.keys.filter((k) => k.purpose === "server" && k.state === "active")
+            .length > 1,
       )
         ? 5000
         : false,

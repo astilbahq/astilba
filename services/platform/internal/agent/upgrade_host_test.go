@@ -285,7 +285,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 					if condition.metadata {
 						err = e.postgresManifest(ctx, helper, a, j.source, &backup.Manifest{})
 					} else {
-						err = e.upgradeDatabaseChecks(ctx, helper, a)
+						err = e.upgradeDatabaseChecks(ctx, helper, a, target)
 					}
 					if err == nil {
 						t.Fatalf("unsupported source accepted: %s", condition.setup)
@@ -300,7 +300,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
-				if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "additional databases") {
+				if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err == nil || !strings.Contains(err.Error(), "additional databases") {
 					t.Fatalf("an additional database marked as a template was accepted: %v", err)
 				}
 				for _, statement := range []string{"ALTER DATABASE templated IS_TEMPLATE false", "DROP DATABASE templated"} {
@@ -335,7 +335,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.create); err != nil {
 							t.Fatal(err)
 						}
-						if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
+						if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err == nil {
 							t.Fatalf("%s: maintenance object was accepted", database.Postgres.Database)
 						}
 						if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, database, object.drop); err != nil {
@@ -364,7 +364,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.make); err != nil {
 						t.Fatal(err)
 					}
-					if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
+					if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err == nil {
 						t.Fatalf("a maintenance database changed by %q was accepted", change.make)
 					}
 					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.undo); err != nil {
@@ -377,7 +377,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
-				if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "additional databases") {
+				if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err == nil || !strings.Contains(err.Error(), "additional databases") {
 					t.Fatalf("a database named template0 that isn't template0 was accepted: %v", err)
 				}
 				for _, statement := range []string{"DROP DATABASE template0", `ALTER DATABASE "template0 kept" RENAME TO template0`} {
@@ -385,7 +385,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
-				nativeUpgradeLocaleRefusals(t, e, helper, source.ID, a, p, j.source)
+				nativeUpgradeLocaleRefusals(t, e, helper, source.ID, a, state, target, j.source)
 				// Temporary tables go with their sessions, and the temporary schemas the sessions
 				// leave behind hold nothing; any role may make them in postgres.
 				for _, database := range []domain.Application{admin, template} {
@@ -420,7 +420,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 					}
 				}
 				stop := hold(admin, "BEGIN; CREATE TEMPORARY TABLE kept(id serial PRIMARY KEY, mood text DEFAULT 'calm' CHECK (id > 0)); CREATE INDEX ON kept(mood); CREATE TEMPORARY VIEW seen AS SELECT * FROM kept; COMMIT", "SELECT count(*) FROM pg_class WHERE relname = 'kept' AND relpersistence = 't'")
-				err = e.upgradeDatabaseChecks(ctx, helper, a)
+				err = e.upgradeDatabaseChecks(ctx, helper, a, target)
 				stop()
 				if err != nil {
 					t.Fatal("template1 and postgres as initdb made them, with temporary tables, were refused:", err)
@@ -428,7 +428,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				// A permanent table using a temporary one's type outlives it, so it counts.
 				for _, database := range []domain.Application{admin, template} {
 					stop = hold(database, "BEGIN; CREATE TEMPORARY TABLE linked(id integer); CREATE TABLE information_schema.linked(id integer, kept pg_temp.linked); COMMIT", "SELECT count(*) FROM pg_class WHERE oid = 'information_schema.linked'::regclass")
-					err = e.upgradeDatabaseChecks(ctx, helper, a)
+					err = e.upgradeDatabaseChecks(ctx, helper, a, target)
 					stop()
 					if _, dropErr := e.pgQuery(ctx, pgClient{container: source.ID}, database, "DROP TABLE information_schema.linked"); dropErr != nil {
 						t.Fatal(dropErr)
@@ -448,14 +448,14 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "CREATE FUNCTION "+left+".leftover() RETURNS integer LANGUAGE sql AS 'SELECT 1'; CREATE TYPE "+left+".mood AS ENUM ('calm'); CREATE TYPE "+left+".span AS RANGE (subtype = integer)"); err != nil {
 					t.Fatal(err)
 				}
-				err = e.upgradeDatabaseChecks(ctx, helper, a)
+				err = e.upgradeDatabaseChecks(ctx, helper, a, target)
 				if err == nil || !strings.Contains(err.Error(), "function "+left+".leftover()") || !strings.Contains(err.Error(), "type "+left+".mood") || !strings.Contains(err.Error(), "type "+left+".span") || strings.Contains(err.Error(), "[]") || strings.Contains(err.Error(), "multirange") || strings.Contains(err.Error(), ".span(") {
 					t.Fatalf("a crashed session's leftovers weren't named, each once: %v", err)
 				}
 				if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, "DROP FUNCTION "+left+".leftover(); DROP TYPE "+left+".mood; DROP TYPE "+left+".span"); err != nil {
 					t.Fatal(err)
 				}
-				if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+				if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err != nil {
 					t.Fatal("the dropped leftovers were still refused:", err)
 				}
 				// An unknown local client is refused as a client, before the databases are checked: the

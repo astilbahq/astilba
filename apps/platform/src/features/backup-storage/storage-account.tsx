@@ -6,7 +6,7 @@ import { client, result, type Schema } from "../../api/client";
 import { Button } from "../../components/button";
 import * as s from "../../styles";
 import { ErrorNotice, useAction } from "../../ui";
-import { ReplaceAdminKey } from "./account-forms";
+import { KeyRotation, ReplaceAdminKey } from "./account-forms";
 import { useBackupStorageText } from "./backup-storage-text";
 import * as st from "./backup-storage.styles";
 import { FoundUsers } from "./found-users";
@@ -56,6 +56,14 @@ export function StorageAccount({
         <dd className={st.identifier}>{account.path}</dd>
         <dt>{t(($) => $.account.installation)}</dt>
         <dd className={st.identifier}>{account.installationId}</dd>
+        <dt>{t(($) => $.account.rotation)}</dt>
+        <dd>
+          {account.keyRotationDays === null
+            ? t(($) => $.account.rotationOff)
+            : t(($) => $.account.rotationEvery, {
+                count: account.keyRotationDays,
+              })}
+        </dd>
       </dl>
       <div className={st.part}>
         {/* Announces a check as it starts and once it reports. */}
@@ -166,6 +174,7 @@ export function StorageAccount({
           <p>{t(($) => $.destinations.none)}</p>
         )}
       </section>
+      {owner && <KeyRotation workspaceId={workspaceId} account={account} />}
       {owner && <ReplaceAdminKey workspaceId={workspaceId} account={account} />}
     </article>
   );

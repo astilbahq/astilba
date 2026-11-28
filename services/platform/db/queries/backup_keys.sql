@@ -1,11 +1,11 @@
 -- name: InsertBackupStorageAccount :exec
-INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential)
-VALUES(@id,@workspace_id,@name,@aws_account,@admin_arn,@boundary,@encrypted_credential);
+INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,key_rotation_days)
+VALUES(@id,@workspace_id,@name,@aws_account,@admin_arn,@boundary,@encrypted_credential,sqlc.narg(key_rotation_days));
 
 -- name: ListBackupStorageAccounts :many
 -- checking is a check asked for and not yet claimed, or one claimed in the last ten minutes, as long
 -- as a check runs at most, that hasn't reported.
-SELECT id,name,aws_account,admin_arn,boundary,generation,peers,reported_at,check_error,report,created_at,
+SELECT id,name,aws_account,admin_arn,boundary,generation,peers,key_rotation_days,reported_at,check_error,report,created_at,
     (checked_at IS NULL OR ((reported_at IS NULL OR reported_at < checked_at) AND checked_at > clock_timestamp() - interval '10 minutes'))::bool AS checking
 FROM backup_storage_accounts WHERE workspace_id = @workspace_id ORDER BY name,id LIMIT 100;
 
@@ -18,6 +18,10 @@ FROM backup_storage_accounts WHERE workspace_id = @workspace_id AND id = @id;
 -- The boundary stays: every user minted under the account carries it.
 UPDATE backup_storage_accounts SET admin_arn = @admin_arn,encrypted_credential = @encrypted_credential,generation=generation+1
 WHERE workspace_id = @workspace_id AND id = @id AND generation = @generation;
+
+-- name: SetBackupStorageKeyRotation :execrows
+UPDATE backup_storage_accounts SET key_rotation_days = sqlc.narg(key_rotation_days)
+WHERE workspace_id = @workspace_id AND id = @id;
 
 -- name: AddBackupStorageAccountPeer :execrows
 UPDATE backup_storage_accounts SET peers=array_append(peers,@peer::uuid)
@@ -50,8 +54,9 @@ ORDER BY account_id,user_name LIMIT 1000;
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,destination_id,holder_server_id,purpose,scope,user_name,recovery_request,recovery_policy_id,recovery_snapshot)
 VALUES(@id,@workspace_id,@account_id,@destination_id,@holder_server_id,@purpose,@scope,@user_name,sqlc.narg(recovery_request),sqlc.narg(recovery_policy_id),sqlc.narg(recovery_snapshot));
 
--- name: InsertFoundBackupStorageKey :exec
--- A user the account check found with no row, latched for the sweep to revoke.
+-- name: InsertFoundBackupStorageKey :execrows
+-- A user the account check found with no row, latched for the sweep to revoke. A name that already
+-- has a row inserts nothing.
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES(@id,@workspace_id,@account_id,'found',@user_name,@found_tags,'revoking')
 ON CONFLICT (user_name) DO NOTHING;
@@ -169,30 +174,62 @@ WHERE k.purpose = 'recovery' AND k.state = 'active' AND r.workspace_id = k.works
     AND o.state IN ('succeeded','failed','cancelled')
 RETURNING k.workspace_id,k.id;
 
--- name: DestinationServerKeys :many
--- unscoped: the sweep's view of every managed destination's active server keys, newest first.
-SELECT k.workspace_id,k.destination_id,k.id,k.holder_server_id,k.activated_at,k.installs
+-- name: SupersededServerKeys :many
+-- unscoped: the active server keys whose destination's newest active key has replaced them on
+-- their holder. The holder reports every policy generation the newest key's installs carry, or the
+-- policy is gone or in an environment whose retirement removed its schedules from the host
+-- (retired, purging or purged), so it uses no key. A retired environment restored later installs
+-- its policy at that generation, which carries the newest key.
+SELECT k.workspace_id,k.id
 FROM backup_storage_keys k
-WHERE k.purpose = 'server' AND k.state = 'active'
-    AND EXISTS(SELECT 1 FROM backup_storage_keys o WHERE o.workspace_id = k.workspace_id AND o.destination_id = k.destination_id AND o.purpose = 'server' AND o.state = 'active' AND o.id <> k.id)
-ORDER BY k.workspace_id,k.destination_id,k.activated_at DESC,k.id DESC
+CROSS JOIN LATERAL (SELECT n.id,n.installs FROM backup_storage_keys n
+    WHERE n.workspace_id = k.workspace_id AND n.destination_id = k.destination_id AND n.purpose = 'server' AND n.state = 'active'
+    ORDER BY n.activated_at DESC,n.id DESC LIMIT 1) n
+WHERE k.purpose = 'server' AND k.state = 'active' AND n.id <> k.id
+    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(n.installs) i
+        JOIN backup_policies p ON p.workspace_id = k.workspace_id AND p.id = (i->>'policy')::uuid
+        JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id AND e.state IN ('active','retiring')
+        WHERE COALESCE((p.status->>'generation')::bigint,0) < (i->>'generation')::bigint)
+ORDER BY k.workspace_id,k.id
 LIMIT 1000;
 
--- name: PolicyReportedGenerations :many
-SELECT id,COALESCE((status->>'generation')::bigint,0)::bigint AS reported,(configuration->>'generation')::bigint AS configured
-FROM backup_policies WHERE workspace_id = @workspace_id AND id = ANY(@ids::uuid[]);
-
 -- name: ClaimDueBackupRemint :one
--- unscoped: a managed destination whose server isn't revoked, that once had a key and now has no
--- active or minting one. Claiming pushes its next attempt on before the mint runs.
+-- unscoped: a managed destination whose server isn't revoked, that once had a key and has none
+-- minting, and either has no active one, a renewed server's, or has one the owner asked to replace
+-- or that is older than its account's key_rotation_days, as BackupDestinationKeyState reads it.
+-- One whose re-mint failed is claimed even once it no longer needs a key, for example after the
+-- owner turned rotation off, so its job clears the failure. Claiming pushes its next attempt on
+-- before the mint runs.
 UPDATE backup_destinations SET remint_next_at=clock_timestamp() + interval '10 minutes'
 WHERE id=(SELECT d.id FROM backup_destinations d
     JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id AND NOT s.revoked
-    WHERE d.account_id IS NOT NULL AND (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp())
-        AND EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.activated_at IS NOT NULL)
-        AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state IN ('minting','active'))
+    JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+    CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+            count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+        FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+    WHERE (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp()) AND k.activated > 0 AND k.minting = 0
+        AND (k.active = 0 OR k.active = 1 AND (d.rekey_requested_at > k.newest OR k.newest <= clock_timestamp() - make_interval(hours => 24 * a.key_rotation_days)) OR d.remint_error IS NOT NULL)
     ORDER BY d.remint_next_at NULLS FIRST,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
 RETURNING workspace_id,id;
+
+-- name: BackupDestinationKeyState :one
+-- A managed destination's server keys, by ClaimDueBackupRemint's reading: how many are active,
+-- minting, or were ever active; whether the owner asked for the newest active one to be replaced;
+-- and whether it is older than its account's key_rotation_days.
+SELECT k.active::bigint AS active,k.minting::bigint AS minting,k.activated::bigint AS activated,
+    COALESCE(d.rekey_requested_at > k.newest,false)::bool AS requested,
+    COALESCE(k.newest + make_interval(hours => 24 * a.key_rotation_days) <= clock_timestamp(),false)::bool AS due
+FROM backup_destinations d
+JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+        count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+    FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+WHERE d.workspace_id = @workspace_id AND d.id = @id;
+
+-- name: RequestBackupRekey :exec
+-- The owner's request to replace a destination's key, which the next pass claims.
+UPDATE backup_destinations SET rekey_requested_at=clock_timestamp(),remint_next_at=NULL
+WHERE workspace_id = @workspace_id AND id = @id AND account_id IS NOT NULL;
 
 -- name: RecordBackupRemintFailure :exec
 -- A failed re-mint backs off to an hour.
@@ -203,6 +240,12 @@ WHERE workspace_id = @workspace_id AND id = @id;
 -- name: RecordBackupRemint :exec
 UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
+
+-- name: ClearServerBackupRemints :exec
+-- A revoked server's destinations need no new key until it is renewed, so a failure to make one
+-- no longer stands.
+UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND account_id IS NOT NULL;
 
 -- name: RetryBackupRemint :exec
 -- The owner's retry starts a failing re-mint on the next pass.
@@ -237,9 +280,6 @@ FROM (
 ) ranked
 WHERE n <= 20
 ORDER BY destination_id,n LIMIT 2000;
-
--- name: LiveServerKeyExists :one
-SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = @workspace_id AND destination_id = @destination_id AND purpose = 'server' AND state IN ('minting','active'))::bool;
 
 -- name: UpdateBackupPolicyConfiguration :exec
 -- A re-mint's generation bump. The policy keeps its sealed access.
@@ -299,3 +339,33 @@ UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestam
 FROM servers s
 WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
     AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations);
+
+-- name: FoundBackupStorageAcknowledgements :many
+-- When the newest acknowledgement covering each user the accounts' latest checks found was made,
+-- by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+-- account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = @workspace_id
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000;
+
+-- name: AcknowledgeBackupStorageUser :exec
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
+VALUES(@workspace_id,@id,@account_id,@identity,@user_name,@iam_user_id,@access_key_ids::text[]);
+
+-- name: UnacknowledgedPeerBackupStorageUsers :many
+-- The users each account's latest check found with its boundary and tagged with one of its peers,
+-- as the account lists them now, that no acknowledgement covers. One covers a user when it has the
+-- user's identity and holds every access key the check found on it. Management writes a peer's
+-- tag as the UUID's canonical text, so a tag in any other form isn't a peer's.
+SELECT (u.value->>'id')::uuid AS id FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+WHERE a.workspace_id = @workspace_id AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
+    AND u.value->>'installationId' = ANY(a.peers::text[])
+    AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+            AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
+ORDER BY 1 LIMIT 10000;

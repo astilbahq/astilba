@@ -78,17 +78,14 @@ func TestRevokingALiveServersKeyExposesNothing(t *testing.T) {
 }
 
 // A found user the owner revokes shows as revoking from its own row, with why its revocation
-// last failed, and the check that follows no longer raises the alert. A peer's user can't be
-// revoked here, and a full peer list refuses another.
+// last failed, and the check that follows no longer raises the alert. A peer's user the owner
+// acknowledged can't be revoked here, and a full peer list refuses another.
 func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	k := newKeysFixture(t)
 	path := awskeys.Path(k.ws.String())
 	stranger, peer := "astilba-"+uuid.NewString(), "astilba-"+uuid.NewString()
 	peerInstallation := uuid.New()
-	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
-	k.aws.CreateUser(peer, path, k.boundary, map[string]string{"astilba:installation": peerInstallation.String()}, "")
 	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
-	k.run(t, accountCheck{})
 	accounts := func() api.BackupStorageAccount {
 		t.Helper()
 		var list []api.BackupStorageAccount
@@ -98,10 +95,22 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 		}
 		return list[0]
 	}
+	// A check asked for as a check job finishes waits for the next periodic pass, since River
+	// takes the request's job for the finishing one (PLAT-640), so check jobs run until the account
+	// reports. The account check tests do the same; drop the loops once PLAT-640 is fixed.
 	reported := func() {
 		t.Helper()
-		waitFor(t, "the account check didn't report", 30*time.Second, func() bool { return !accounts().Checking })
+		waitFor(t, "the account check didn't report", 30*time.Second, func() bool {
+			k.run(t, accountCheck{})
+			return !accounts().Checking
+		})
 	}
+	// Adding the account checks it at once, which may run before or after the users are made, so
+	// they are made once that check has reported, and then checked for.
+	reported()
+	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
+	k.aws.CreateUser(peer, path, k.boundary, map[string]string{"astilba:installation": peerInstallation.String()}, "")
+	k.b.call("POST", account+"/check", nil, 204, nil)
 	reported()
 	if got := accounts(); got.CheckedAt == nil || len(got.FoundUsers) != 2 {
 		t.Fatalf("after the check the account is %+v", got)
@@ -110,23 +119,28 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	// user as a stranger's. The account's peers are what count.
 	k.aws.Fail("ListUsers", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/peers", api.BackupStorageAccountPeerRequest{InstallationId: peerInstallation}, 204, nil)
-	k.run(t, accountCheck{})
 	reported()
 	got := accounts()
 	if got.CheckError == nil {
 		t.Fatalf("the check after adding the peer didn't fail: %+v", got)
 	}
+	var peerUser api.BackupStorageFoundUser
 	for _, u := range got.FoundUsers {
 		if u.Peer != (u.UserName == peer) {
 			t.Fatalf("with the peer added, the found user is shown as %+v", u)
 		}
+		if u.UserName == peer {
+			peerUser = u
+		}
 	}
+	k.b.call("POST", account+"/found-users/"+peer+"/acknowledge", api.BackupStorageAcknowledgementRequest{UserId: peerUser.UserId, AccessKeyIds: peerUser.AccessKeyIds}, 204, nil)
 	k.b.call("POST", account+"/found-users/"+peer+"/revoke", nil, 409, nil)
 
-	k.aws.Fail("ListAccessKeys", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	// The check lists found users' access keys too, so the failures go to a call only the
+	// revocation makes.
+	k.aws.Fail("DeleteUserPolicy", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
-	k.run(t, accountCheck{})
 	reported()
 	got = accounts()
 	var shown *api.BackupStorageFoundUser
@@ -203,8 +217,8 @@ func TestABusyEnvironmentDoesntHoldUpRevocation(t *testing.T) {
 	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
 	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
 	k.b.call("POST", account+"/check", nil, 204, nil)
-	k.run(t, accountCheck{})
 	waitFor(t, "the account check didn't report the stranger", 30*time.Second, func() bool {
+		k.run(t, accountCheck{})
 		var list []api.BackupStorageAccount
 		k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &list)
 		return len(list) == 1 && !list[0].Checking && len(list[0].FoundUsers) == 1
@@ -247,8 +261,11 @@ func TestAKeyWhoseUserIsGoneIsRevokedWhateverIAMAnswers(t *testing.T) {
 		// The account check asks IAM only about a key active well before it began.
 		k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '2 hours' WHERE id=$1`, d.Keys[0].Id)
 		k.b.call("POST", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/check", nil, 204, nil)
-		k.run(t, accountCheck{})
-		waitFor(t, "the account check didn't find the user gone", 30*time.Second, func() bool { s, _ := k.keyState(t, d.Keys[0].Id); return s != "active" })
+		waitFor(t, "the account check didn't find the user gone", 30*time.Second, func() bool {
+			k.run(t, accountCheck{})
+			s, _ := k.keyState(t, d.Keys[0].Id)
+			return s != "active"
+		})
 		k.exec(t, `UPDATE backup_storage_keys SET next_attempt_at=now() WHERE id=$1`, d.Keys[0].Id)
 		k.run(t, keySweep{})
 		if s, e := k.keyState(t, d.Keys[0].Id); s != "revoked" {
@@ -302,8 +319,8 @@ func TestUnlistedUsersWithoutAKeyAreRevokedOnceTheyWouldBeListed(t *testing.T) {
 	k.aws.CreateUser(stranger, path, k.boundary, map[string]string{"astilba:installation": uuid.NewString()}, "")
 	account := k.base + "/backup-storage-accounts/" + k.account.Id.String()
 	k.b.call("POST", account+"/check", nil, 204, nil)
-	k.run(t, accountCheck{})
 	waitFor(t, "the account check didn't report the stranger", 30*time.Second, func() bool {
+		k.run(t, accountCheck{})
 		var list []api.BackupStorageAccount
 		k.b.call("GET", k.base+"/backup-storage-accounts", nil, 200, &list)
 		return len(list) == 1 && !list[0].Checking && len(list[0].FoundUsers) == 1

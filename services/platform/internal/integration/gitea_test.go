@@ -2,6 +2,7 @@ package integration
 
 import (
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -261,6 +262,27 @@ func TestGiteaRunsTheGitPathAsFixturesDo(t *testing.T) {
 			if can, err := p.CanPush(t.Context()); err != nil || can != want {
 				t.Fatalf("Gitea's answer about pushing was misread: %t want %t: %v", can, want, err)
 			}
+		}
+		// Gitea refuses every push to an archived repository, so that refusal says nothing about
+		// a token: its API still shows the read token can't write, and the write token, which can
+		// push once the repository is unarchived, is refused as unclear, also when connecting.
+		g.call("POST", "/user/repos", map[string]any{"name": "archived", "private": true, "auto_init": true, "default_branch": "main"}, 201, nil)
+		g.call("PATCH", "/repos/owner/archived", map[string]any{"archived": true}, 200, nil)
+		archived := created.Connection
+		archived.Repository = "owner/archived"
+		for token, unclear := range map[string]bool{g.read: false, g.write: true} {
+			p, err := pipeline.NewProvider(archived, pipeline.Credential{Username: "owner", Password: token}, pipeline.Policy{Development: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answer *pipeline.PushUnclear
+			if can, err := p.CanPush(t.Context()); can || errors.As(err, &answer) != unclear || !unclear && err != nil {
+				t.Fatalf("Gitea's answer about pushing to an archived repository was misread: %t %v", can, err)
+			}
+		}
+		refusal := string(b.call("POST", prefix+"/git-connections", map[string]any{"name": "Archived", "provider": "gitea", "baseUrl": g.base, "repository": "owner/archived", "api": map[string]string{"username": "owner", "password": g.write}, "clone": map[string]string{"username": "owner", "password": g.write}}, 400, nil))
+		if !strings.Contains(refusal, "clone.pushUnknown") {
+			t.Fatal("a write clone token on an archived repository was accepted", refusal)
 		}
 		// A push with the runner's token, as a build escape would try it, is refused by Gitea.
 		escape := "cd /tmp && rm -rf escape && git clone -q http://owner:" + g.read + "@localhost:3000/owner/app.git escape && cd escape && git -c user.email=e@example.test -c user.name=e commit -q --allow-empty -m escape && git push -q origin HEAD:refs/heads/runner-escape"

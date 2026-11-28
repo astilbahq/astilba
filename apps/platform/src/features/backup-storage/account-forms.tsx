@@ -1,13 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  backupDestinationsOptions,
   backupStorageAccountPath,
   backupStorageAccountsOptions,
   backupStorageAccountsPath,
 } from "../../api/backups";
 import { ApiError, client, result, type Schema } from "../../api/client";
 import { Anchor } from "../../components/link";
+import { Radio } from "../../components/radio";
 import * as s from "../../styles";
 import {
   BusyButton,
@@ -49,6 +51,71 @@ const adminKey = (d: FormData) => ({
   secretAccessKey: text(d, "secretAccessKey"),
 });
 
+// The period new accounts start with, as migration 00079 gave existing ones.
+const suggestedRotationDays = 90;
+
+/**
+ * How old the account's destinations' keys may grow before management replaces them. Turning
+ * that off is a choice of its own rather than an empty field. Resetting the form chooses `days`
+ * again; nothing else remounts the fields, so focus stays where the owner left it.
+ */
+function KeyRotationFields({ days }: { days: number | null }) {
+  const { t } = useTranslation("backup-storage");
+  const [on, setOn] = useState(days !== null);
+  const onId = useId(),
+    offId = useId();
+  const fields = useRef<HTMLFieldSetElement>(null);
+  useEffect(() => {
+    const form = fields.current?.form;
+    const reset = () => setOn(days !== null);
+    form?.addEventListener("reset", reset);
+    return () => form?.removeEventListener("reset", reset);
+  }, [days]);
+  return (
+    <fieldset ref={fields} className={s.choices}>
+      <legend className={s.choiceLegend}>{t(($) => $.rotation.legend)}</legend>
+      <p className={s.muted}>{t(($) => $.rotation.description)}</p>
+      <label htmlFor={onId} className={s.choice}>
+        <Radio
+          id={onId}
+          name="rotation"
+          value="on"
+          checked={on}
+          onChange={() => setOn(true)}
+        />
+        <span>{t(($) => $.rotation.on)}</span>
+      </label>
+      {on && (
+        <Field
+          name="keyRotationDays"
+          label={t(($) => $.rotation.days)}
+          type="number"
+          inputMode="numeric"
+          min={30}
+          max={365}
+          defaultValue={days ?? suggestedRotationDays}
+        />
+      )}
+      <label htmlFor={offId} className={s.choice}>
+        <Radio
+          id={offId}
+          name="rotation"
+          value="off"
+          checked={!on}
+          onChange={() => setOn(false)}
+        />
+        <span className={s.choiceText}>
+          <span>{t(($) => $.rotation.off)}</span>
+          <span className={s.muted}>{t(($) => $.rotation.offDescription)}</span>
+        </span>
+      </label>
+    </fieldset>
+  );
+}
+
+const keyRotationDays = (d: FormData) =>
+  text(d, "rotation") === "off" ? null : Number(text(d, "keyRotationDays"));
+
 /** Adds a storage account: an AWS admin credential management checks before storing it. */
 export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
   const { t } = useTranslation("backup-storage");
@@ -82,6 +149,7 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
                   name: text(d, "name"),
                   ...adminKey(d),
                   boundary: text(d, "boundary").trim(),
+                  keyRotationDays: keyRotationDays(d),
                 },
               }),
             );
@@ -104,6 +172,7 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
           autoCapitalize="none"
           spellCheck={false}
         />
+        <KeyRotationFields days={suggestedRotationDays} />
         <BusyButton busy={action.isPending}>
           {t(($) => $.add.submit)}
         </BusyButton>
@@ -174,6 +243,59 @@ export function ReplaceAdminKey({
         </Form>
         <p role="status">{replaced ? t(($) => $.replace.replaced) : null}</p>
       </div>
+    </details>
+  );
+}
+
+/**
+ * Changes how old the account's destinations' keys may grow before management replaces them, or
+ * turns that off. Each change is audited.
+ */
+export function KeyRotation({
+  workspaceId,
+  account,
+}: {
+  workspaceId: string;
+  account: Schema["BackupStorageAccount"];
+}) {
+  const { t } = useTranslation("backup-storage");
+  const action = useAction({ recentAuth: true });
+  const queries = useQueryClient();
+  const [saved, setSaved] = useState(false);
+  return (
+    <details>
+      <summary>{t(($) => $.rotation.summary)}</summary>
+      <Form
+        action={action}
+        label={t(($) => $.rotation.label, { name: account.name })}
+        onSubmit={(d) =>
+          action.run(async () => {
+            setSaved(false);
+            await result(
+              client.PUT(`${backupStorageAccountPath}/key-rotation`, {
+                params: { path: { workspaceId, accountId: account.id } },
+                body: { keyRotationDays: keyRotationDays(d) },
+              }),
+            );
+            setSaved(true);
+            // The destinations show when their keys are replaced, and a shorter period can start
+            // a replacement at once.
+            await Promise.all(
+              [
+                backupStorageAccountsOptions(workspaceId),
+                backupDestinationsOptions(workspaceId),
+              ].map(({ queryKey }) => queries.invalidateQueries({ queryKey })),
+            );
+          })
+        }
+      >
+        <ErrorNotice error={action.error} />
+        <KeyRotationFields days={account.keyRotationDays} />
+        <BusyButton busy={action.isPending}>
+          {t(($) => $.rotation.submit)}
+        </BusyButton>
+      </Form>
+      <p role="status">{saved ? t(($) => $.rotation.saved) : null}</p>
     </details>
   );
 }

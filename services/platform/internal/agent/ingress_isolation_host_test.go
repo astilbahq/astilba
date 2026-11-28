@@ -411,20 +411,31 @@ func (c *proxyCalls) RoundTrip(r *http.Request) (*http.Response, error) {
 // watchProxyCalls gives the agent a Docker client that reports to the returned calls.
 func (h isolationHost) watchProxyCalls() *proxyCalls {
 	h.t.Helper()
+	var calls *proxyCalls
+	h.dockerThrough(func(base http.RoundTripper) http.RoundTripper {
+		calls = &proxyCalls{base: base}
+		return calls
+	})
+	return calls
+}
+
+// dockerThrough gives the agent a Docker client whose requests go through the transport
+// wrap makes of one to the test's daemon.
+func (h isolationHost) dockerThrough(wrap func(base http.RoundTripper) http.RoundTripper) {
+	h.t.Helper()
 	host, err := client.ParseHostURL(os.Getenv("PLAT_APP_DOCKER_HOST"))
 	if err != nil || host.Scheme != "unix" {
 		h.t.Fatalf("a Unix socket daemon is required: %v", err)
 	}
-	calls := &proxyCalls{base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	base := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", host.Host)
-	}}}
-	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")), client.WithHTTPClient(&http.Client{Transport: calls}))
+	}}
+	docker, err := client.New(client.WithHost(os.Getenv("PLAT_APP_DOCKER_HOST")), client.WithHTTPClient(&http.Client{Transport: wrap(base)}))
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.t.Cleanup(func() { docker.Close() })
 	h.e.Docker = docker
-	return calls
 }
 
 // A reconciliation that accepts a changed proxy and then fails before replacing it must

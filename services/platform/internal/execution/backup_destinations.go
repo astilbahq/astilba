@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"slices"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -46,6 +47,7 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 			view := destinationView(v, row.ServerID, row.Shared, slices.Contains(exposed, v.ID))
 			if row.AccountID != nil {
 				view.AccountId, view.Keys, view.RemintError, view.Placeholder = row.AccountID, keys[v.ID], textPointer(row.RemintError), row.Placeholder
+				view.RotationRequested, view.RotationDueAt = row.RotationRequested, keyRotationDue(row)
 			}
 			for _, p := range policies {
 				if p.DestinationID == v.ID {
@@ -57,6 +59,16 @@ func (s *Service) BackupDestinations(ctx context.Context, p store.Principal, ws 
 		return nil
 	})
 	return out, err
+}
+
+// keyRotationDue is when a managed destination's account rotates its key, as ClaimDueBackupRemint
+// reads key_rotation_days: while it holds one active key, on a server that isn't revoked.
+func keyRotationDue(row db.ListBackupDestinationsRow) *time.Time {
+	if !row.KeyRotationDays.Valid || row.ActiveKeys != 1 || row.ServerRevoked || row.KeyActivatedAt == nil {
+		return nil
+	}
+	due := row.KeyActivatedAt.Add(time.Duration(row.KeyRotationDays.Int32) * 24 * time.Hour)
+	return &due
 }
 
 // destinationView is d, bound to server or shared, as the API shows it.
@@ -219,14 +231,14 @@ func (s *Service) CreateManagedBackupDestination(ctx context.Context, p store.Pr
 		}
 		return api.BackupDestination{}, mintError(err)
 	}
-	var out api.BackupDestination
-	err = s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		keys, err := destinationKeys(ctx, tx, ws)
-		out = destinationView(d, &server, false, false)
-		out.AccountId, out.Keys = &account, keys[d.ID]
-		return err
-	})
-	return out, err
+	// The view is the list's, so it shows the key's rotation as every later read does.
+	list, err := s.BackupDestinations(ctx, p, ws)
+	if i := slices.IndexFunc(list, func(v api.BackupDestination) bool { return v.Id == d.ID }); err == nil && i >= 0 {
+		return list[i], nil
+	} else if err == nil {
+		err = domain.NotFound
+	}
+	return api.BackupDestination{}, err
 }
 
 var (
@@ -304,6 +316,48 @@ func (s *Service) RevokeBackupStorageKey(ctx context.Context, p store.Principal,
 			return err
 		}
 		if _, err = q.LatchBackupStorageKey(ctx, db.LatchBackupStorageKeyParams{WorkspaceID: ws, ID: key, LastError: pgtype.Text{}}); err != nil {
+			return err
+		}
+		return s.queueKeySweep(ctx, tx)
+	})
+}
+
+var (
+	errRotateRevoked = &domain.Error{Code: "conflict", Message: "This destination's server is revoked, so its keys aren't replaced."}
+	errRotateNoKey   = &domain.Error{Code: "conflict", Message: "This destination has no key in use to replace."}
+	errRotating      = &domain.Error{Code: "conflict", Message: "This destination's key is already being replaced. Its old key is revoked once its server installs the new one."}
+	errRotateAsked   = &domain.Error{Code: "conflict", Message: "A new key for this destination has already been asked for. If making it keeps failing, fix the cause and retry."}
+)
+
+// RotateBackupStorageKey asks for a managed destination's key to be replaced without revoking its
+// server. The request stands until a key activates after it, so the sweep's re-mint tries again
+// after a failure, and the old key is revoked once the server has installed the new one.
+func (s *Service) RotateBackupStorageKey(ctx context.Context, p store.Principal, ws, destination uuid.UUID) error {
+	return s.scope(ctx, p, ws, ownerSettings, "backup.key.rotate", destination, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		d, err := q.ManagedBackupDestination(ctx, db.ManagedBackupDestinationParams{WorkspaceID: ws, ID: destination})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound
+		} else if err != nil {
+			return err
+		}
+		if revoked, err := serverRevoked(ctx, tx, ws, *d.ServerID); err != nil {
+			return err
+		} else if revoked {
+			return errRotateRevoked
+		}
+		k, err := q.BackupDestinationKeyState(ctx, db.BackupDestinationKeyStateParams{WorkspaceID: ws, ID: destination})
+		switch {
+		case err != nil:
+			return err
+		case k.Minting > 0 || k.Active > 1:
+			return errRotating
+		case k.Active == 0:
+			return errRotateNoKey
+		case k.Requested:
+			return errRotateAsked
+		}
+		if err = q.RequestBackupRekey(ctx, db.RequestBackupRekeyParams{WorkspaceID: ws, ID: destination}); err != nil {
 			return err
 		}
 		return s.queueKeySweep(ctx, tx)

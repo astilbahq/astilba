@@ -46,7 +46,7 @@ func TestGitImportBuildIsolationAndArtifactAdmission(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if answerReceivePack(w, r) {
+		if answerPushCheck(w, r) {
 			return
 		}
 		if r.Header.Get("Authorization") != "token api-write-canary" {

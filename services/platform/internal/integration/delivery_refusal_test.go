@@ -138,6 +138,19 @@ func TestBuildRefusedAtDeliveryReleasesTheRunner(t *testing.T) {
 			refuse:  refuseRepository(http.StatusForbidden, nil, `{"message":"user does not have permission"}`),
 			restore: func(r *refusalRunner) { r.provider.refusing.Store(nil) },
 		},
+		{
+			// Gitea refuses the push check with a bare "Forbidden" whatever the reason, so its API's
+			// own refusal of a write request is what shows the token can't write. Anything in front
+			// of the API, as an IP allow list, refuses that request the same way for a token that
+			// can push.
+			name:    "push check unanswered",
+			failed:  "Refused before runner delivery: The Git server refused to say whether the connection's clone credential can push",
+			stopped: "Stopped: The Git server refused to say whether the connection's clone credential can push",
+			refuse: func(r *refusalRunner) {
+				r.provider.refusing.Store(&providerRefusal{match: "/branches/" + pushCheckBranch, status: http.StatusForbidden, body: "Forbidden\n"})
+			},
+			restore: func(r *refusalRunner) { r.provider.refusing.Store(nil) },
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRefusalRunner(t)

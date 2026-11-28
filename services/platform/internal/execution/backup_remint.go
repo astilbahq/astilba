@@ -19,10 +19,13 @@ import (
 	"github.com/riverqueue/river/rivertype"
 )
 
-// A renewed server's managed destination lost its key with the revocation. The re-mint gives it a
-// new one through the same two transactions as a new destination, then moves each of its policies
-// to a new generation and installs it, since an agent ignores an install of the generation it has.
-// The policies keep their repositories and sealed passwords. See docs/backups.md#managed-keys.
+// A renewed server's managed destination lost its key with the revocation, and a rotation replaces
+// a key the server still holds, because the owner asked or its account's key_rotation_days says
+// so. The re-mint gives it a new one through the same two transactions as a new destination, then
+// moves each of its policies to a new generation and installs it, since an agent ignores an install
+// of the generation it has. The policies keep their repositories and sealed passwords. A rotated
+// key stays active until the server reports those generations, and the sweep then supersedes and
+// revokes it. See docs/backups.md#managed-keys.
 type remintArgs struct {
 	Workspace   uuid.UUID `json:"workspace"`
 	Destination uuid.UUID `json:"destination"`
@@ -48,7 +51,10 @@ func (w *remintWorker) Work(ctx context.Context, job *river.Job[remintArgs]) err
 	s, ws, destination := w.service, job.Args.Workspace, job.Args.Destination
 	key, err := s.startRemint(ctx, ws, destination)
 	if errors.Is(err, errNoRemint) {
-		return nil
+		// A failure recorded while it needed one no longer stands.
+		return s.Store.WorkspaceWriteTransaction(ctx, ws, func(tx pgx.Tx) error {
+			return db.New(tx).RecordBackupRemint(ctx, db.RecordBackupRemintParams{WorkspaceID: ws, ID: destination})
+		})
 	} else if err != nil {
 		return s.remintFailed(ctx, ws, destination, err)
 	}
@@ -73,15 +79,46 @@ func (w *remintWorker) Work(ctx context.Context, job *river.Job[remintArgs]) err
 
 var errNoRemint = errors.New("the destination doesn't need a new key")
 
+// keyNeed is why a managed destination needs a new key, by ClaimDueBackupRemint's rule: none once
+// a mint is under way or while two keys are active, a re-mint once a key it had is gone, and a
+// rotation of its one active key when the owner asked or it is due.
+func keyNeed(k db.BackupDestinationKeyStateRow) error {
+	switch {
+	case k.Activated == 0 || k.Minting > 0:
+		return errNoRemint
+	case k.Active == 0, k.Active == 1 && (k.Requested || k.Due):
+		return nil
+	}
+	return errNoRemint
+}
+
+// remintFailed records why the destination still has no new key. While its server is revoked, no
+// key is made for it until it is renewed, and the revocation cleared the destination's failures,
+// so the failure is cleared rather than recorded. One revoked and renewed during the attempt is
+// recorded as failed, and its next attempt makes the renewed server's key.
 func (s *Service) remintFailed(ctx context.Context, ws, destination uuid.UUID, cause error) error {
 	work := context.WithoutCancel(ctx)
 	return s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
-		return db.New(tx).RecordBackupRemintFailure(work, db.RecordBackupRemintFailureParams{WorkspaceID: ws, ID: destination, RemintError: fixedText(errorCode(cause))})
+		q := db.New(tx)
+		d, err := q.ManagedBackupDestination(work, db.ManagedBackupDestinationParams{WorkspaceID: ws, ID: destination})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if d.ServerID != nil {
+			if revoked, err := serverRevoked(work, tx, ws, *d.ServerID); err != nil {
+				return err
+			} else if revoked {
+				return q.RecordBackupRemint(work, db.RecordBackupRemintParams{WorkspaceID: ws, ID: destination})
+			}
+		}
+		return q.RecordBackupRemintFailure(work, db.RecordBackupRemintFailureParams{WorkspaceID: ws, ID: destination, RemintError: fixedText(errorCode(cause))})
 	})
 }
 
 // startRemint records the new key as minting, in the workspace's turn, once the destination still
-// needs one: its server isn't revoked and no key is active or being minted for it.
+// needs one: its server isn't revoked and keyNeed says so.
 func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (uuid.UUID, error) {
 	key := uuid.New()
 	err := s.Store.WorkspaceWriteTransaction(ctx, ws, func(tx pgx.Tx) error {
@@ -95,11 +132,17 @@ func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (u
 		if d.ServerID == nil || d.AccountID == nil {
 			return errNoRemint
 		}
-		if revoked, err := serverRevoked(ctx, tx, ws, *d.ServerID); err != nil || revoked {
-			return errors.Join(err, errNoRemint)
+		if revoked, err := serverRevoked(ctx, tx, ws, *d.ServerID); err != nil {
+			return err
+		} else if revoked {
+			return errNoRemint
 		}
-		if live, err := q.LiveServerKeyExists(ctx, db.LiveServerKeyExistsParams{WorkspaceID: ws, DestinationID: &destination}); err != nil || live {
-			return errors.Join(err, errNoRemint)
+		state, err := q.BackupDestinationKeyState(ctx, db.BackupDestinationKeyStateParams{WorkspaceID: ws, ID: destination})
+		if err != nil {
+			return err
+		}
+		if err = keyNeed(state); err != nil {
+			return err
 		}
 		var config backup.Destination
 		if err = json.Unmarshal(d.Configuration, &config); err != nil {
@@ -115,9 +158,10 @@ func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (u
 }
 
 // finishRemint activates the new key and moves each of the destination's policies past the
-// generation its server has, recording those generations on the key. The old key was latched when
-// its server was revoked; the generations let the sweep supersede an older active key only where a
-// management recovery merged two histories that each re-minted. Management queues the installs itself (see
+// generation its server has, recording those generations on the key. A re-mint's old key was
+// latched when its server was revoked. A rotation's is still active, and the generations let the
+// sweep supersede it once the server has installed the new key, as they do where a management
+// recovery merged two histories that each re-minted. Management queues the installs itself (see
 // queueKeyInstalls), so a coordinated schedule, which runs only at its installed generation,
 // never stops waiting for the owner.
 func (s *Service) finishRemint(ctx context.Context, ws, destination uuid.UUID, m minted) error {

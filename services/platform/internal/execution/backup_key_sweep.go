@@ -2,7 +2,6 @@ package execution
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 // ended, its mint failed or never finished, or a newer key has replaced it on a server that
 // installed that one, and
 // the sweep revokes latched keys at AWS until AWS confirms. It also starts re-mints for renewed
-// servers' destinations. See docs/backups.md#managed-keys.
+// servers' destinations and rotations of keys that are due. See docs/backups.md#managed-keys.
 type keySweepWorker struct {
 	river.WorkerDefaults[keySweepArgs]
 	service *Service
@@ -44,8 +43,10 @@ func (s *Service) runKeySweep(ctx context.Context) error {
 
 // latchDerivedKeys latches the keys whose rows say they are done with: keys still minting past
 // their deadline, recovery keys whose operation has ended however it ended, and server keys
-// replaced by a newer one that their holder has installed. Only a management recovery that merges
-// two histories, each of which re-minted the destination, leaves two active server keys.
+// replaced by a newer one that their holder has installed (see SupersededServerKeys). A rotation
+// leaves two active server keys until then, as does a management recovery that merges two
+// histories, each of which re-minted the destination. Only keys that can be latched are listed,
+// so destinations whose servers haven't installed their new key yet can't crowd the others out.
 func (s *Service) latchDerivedKeys(ctx context.Context) error {
 	if _, err := s.Store.Queries.LatchExpiredMintingKeys(ctx); err != nil {
 		return err
@@ -53,26 +54,16 @@ func (s *Service) latchDerivedKeys(ctx context.Context) error {
 	if _, err := s.Store.Queries.LatchEndedRecoveryKeys(ctx); err != nil {
 		return err
 	}
-	rows, err := s.Store.Queries.DestinationServerKeys(ctx)
+	rows, err := s.Store.Queries.SupersededServerKeys(ctx)
 	if err != nil {
 		return err
 	}
-	type destination struct{ ws, id uuid.UUID }
-	current := map[destination]db.DestinationServerKeysRow{}
 	for _, row := range rows {
-		d := destination{row.WorkspaceID, *row.DestinationID}
-		newest, seen := current[d]
-		if !seen {
-			current[d] = row
-			continue
-		}
-		installed, err := s.installedEverywhere(ctx, row.WorkspaceID, newest.Installs)
-		if err != nil || !installed || ctx.Err() != nil {
-			continue
+		if ctx.Err() != nil {
+			return nil
 		}
 		if err = s.Store.WorkspaceWriteTransaction(ctx, row.WorkspaceID, func(tx pgx.Tx) error {
-			code := "superseded"
-			_, err := db.New(tx).LatchBackupStorageKey(ctx, db.LatchBackupStorageKeyParams{WorkspaceID: row.WorkspaceID, ID: row.ID, LastError: fixedText(code)})
+			_, err := db.New(tx).LatchBackupStorageKey(ctx, db.LatchBackupStorageKeyParams{WorkspaceID: row.WorkspaceID, ID: row.ID, LastError: fixedText("superseded")})
 			return err
 		}); err != nil {
 			return err
@@ -81,37 +72,8 @@ func (s *Service) latchDerivedKeys(ctx context.Context) error {
 	return nil
 }
 
-// installedEverywhere says whether the holder reports every policy generation whose install
-// carries a key, so it no longer uses an older one. A policy that is gone uses no key.
-func (s *Service) installedEverywhere(ctx context.Context, ws uuid.UUID, raw []byte) (bool, error) {
-	var installs []keyInstall
-	if err := json.Unmarshal(raw, &installs); err != nil {
-		return false, err
-	}
-	if len(installs) == 0 {
-		return true, nil
-	}
-	ids := make([]uuid.UUID, 0, len(installs))
-	for _, i := range installs {
-		ids = append(ids, i.Policy)
-	}
-	rows, err := s.Store.Queries.PolicyReportedGenerations(ctx, db.PolicyReportedGenerationsParams{WorkspaceID: ws, Ids: ids})
-	if err != nil {
-		return false, err
-	}
-	reported := map[uuid.UUID]int64{}
-	for _, r := range rows {
-		reported[r.ID] = r.Reported
-	}
-	for _, i := range installs {
-		if g, ok := reported[i.Policy]; ok && g < i.Generation {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// queueRemints starts a re-mint job for each destination whose renewed server has no key.
+// queueRemints starts a re-mint job for each destination whose renewed server has no key, or
+// whose key is due to be rotated.
 func (s *Service) queueRemints(ctx context.Context) error {
 	for range 20 {
 		if ctx.Err() != nil {

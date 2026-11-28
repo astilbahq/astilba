@@ -434,7 +434,10 @@ export default interface Resources {
       "notChecked": "Not checked yet.",
       "path": "IAM path of the users management makes",
       "peers": "Peer installations",
-      "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
+      "peersDescription": "Users these installations make in this AWS account are shown as theirs. Each with the permissions boundary raises an alert until you acknowledge it, since someone holding the admin key can make a user with a peer’s tag.",
+      "rotation": "Key rotation",
+      "rotationEvery": "Management replaces each destination’s key when it is {{count}} day old." | "Management replaces each destination’s key when it is {{count}} days old.",
+      "rotationOff": "Off. Keys stay in use until you rotate them."
     },
     "add": {
       "added": "Storage account {{name}} added.",
@@ -456,11 +459,18 @@ export default interface Resources {
       "location": "Bucket {{bucket}} in {{region}}",
       "locationPrefix": "Bucket {{bucket}} in {{region}}, under {{prefix}}",
       "noKeys": "No keys yet.",
-      "remintFailed": "Management couldn’t make a key for the renewed server and keeps trying: {{reason}}",
+      "remintFailed": "Management couldn’t make a new key for this destination and keeps trying: {{reason}}",
       "retry": "Retry now",
       "retryRequested": "Management is trying again.",
       "retrying": "Retrying…",
       "revoked": "Recently revoked keys",
+      "rotate": "Rotate key",
+      "rotateDescription": "Management makes {{server}} a new key and installs it on the destination’s backup policies. The old key keeps working until the server reports the new one, and management then revokes it, so backups carry on. If the key has leaked, revoke it instead: that stops it at once, but backups can fail until the server installs its new key.",
+      "rotateTitle": "Rotate this destination’s key?",
+      "rotating": "Management is replacing this destination’s key. The old key is revoked once {{server}} installs the new one, so a server that is offline keeps using it until then.",
+      "rotationDue": "Management replaces the key on {{date}}.",
+      "rotationOverdue": "The key was due to be replaced on {{date}}. Management is replacing it.",
+      "rotationRequested": "A new key has been asked for. Management is making it.",
       "server": "Keys for {{server}}",
       "unknownServer": "server {{id}}"
     },
@@ -487,23 +497,34 @@ export default interface Resources {
       "userMissing": "Its IAM user is gone at AWS."
     },
     "found": {
+      "accessKeys": "Access keys: {{keys}}",
+      "acknowledge": "Acknowledge user",
+      "acknowledgeConfirm": "Acknowledge",
+      "acknowledgeDescription": "Acknowledge it only if that installation made it, for example a server this workspace was transferred to. Management then shows it without an alert, and never revokes it. This covers IAM user ID {{id}} with access keys {{keys}}: a user made again under this name, or given another access key, raises the alert again.",
+      "acknowledgeDescriptionNoKeys": "Acknowledge it only if that installation made it, for example a server this workspace was transferred to. Management then shows it without an alert, and never revokes it. This covers IAM user ID {{id}}, which has no access keys: a user made again under this name, or given an access key, raises the alert again.",
+      "acknowledgeTitle": "Acknowledge {{name}} as installation {{installation}}’s?",
       "addPeer": "Add installation as a peer",
       "addPeerConfirm": "Add peer",
-      "addPeerDescription": "Users it makes in this AWS account are then shown as its, with no alert, and management never revokes them. Add only an installation this workspace was transferred to or from.",
+      "addPeerDescription": "Users it makes in this AWS account are then shown as its. Each with the permissions boundary raises an alert until you acknowledge it by name, and once acknowledged, management never revokes it. Add only an installation this workspace was transferred to or from.",
       "addPeerTitle": "Add installation {{installation}} as a peer?",
       "description": "The latest check found these IAM users under this workspace’s path with no record here. One may have been restored from an older management backup, made by another installation, or made with a leaked admin key.",
       "installation": "Tagged by installation {{installation}}",
-      "peer": "Made by a peer installation. Nothing needs doing.",
+      "noAccessKeys": "No access keys",
+      "peer": "Tagged by a peer installation, and acknowledged on {{date}}.",
+      "peerUnacknowledged": "Tagged by a peer installation, and no acknowledgement covers it as the latest check found it. Someone holding the admin key can make a user with a peer’s tag, or give another access key to one you acknowledged, so it raises an alert until you acknowledge it. If that installation didn’t make it, revoke it and replace the admin key.",
+      "peerUnrecorded": "Tagged by a peer installation. The next successful check records what you’d acknowledge.",
       "revoke": "Revoke user",
-      "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
+      "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone. If nobody you know made it, replace the admin key too, since whoever made it may hold it.",
       "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",
+      "revokePeerDescription": "It’s tagged by peer installation {{installation}}, and no acknowledgement covers it as the latest check found it. If that installation made it, a server this workspace was transferred to or from may still use its key, and that server’s backups would fail. Revoke it only if you don’t recognise it, and then replace the admin key, since whoever made it may hold it. Management takes away the user’s access and deletes it at AWS. This can’t be undone.",
       "revokeTitle": "Revoke {{name}}?",
       "revoking": "Management is revoking it.",
       "self": "Tagged by this installation",
       "server": "Tagged for server {{server}}",
       "title": "Users management didn’t make",
       "unbounded": "It has no permissions boundary, so the admin key can’t revoke it. Delete it in the AWS console.",
-      "untagged": "No installation tag"
+      "untagged": "No installation tag",
+      "userId": "IAM user ID {{id}}"
     },
     "guide": "Managed backup keys setup guide",
     "key": {
@@ -516,7 +537,7 @@ export default interface Resources {
         "server": "Server key"
       },
       "revoke": "Revoke key",
-      "revokeCurrent": "Management revokes the key at AWS and then makes the server a new one. The server’s backups can fail until it has installed the new key.",
+      "revokeCurrent": "Management revokes the key at AWS, and makes the server a new one if it has no other key in use. The server’s backups can fail until it has installed a key that isn’t revoked, such as one from a rotation under way.",
       "revokeHandedOver": "This key was handed over to a workspace transfer. Revoking it breaks the transferred server’s backups, which can then no longer reach this bucket.",
       "revokeRecovery": "The restore using it can no longer read its snapshot. Management revokes it itself once the restore ends.",
       "revokeTitle": "Revoke this key?",
@@ -539,6 +560,18 @@ export default interface Resources {
       "summary": "Replace the admin key"
     },
     "retry": "Try again",
+    "rotation": {
+      "days": "Maximum key age in days, from 30 to 365",
+      "description": "Management replaces each destination’s key when it reaches this age, without revoking its server. The old key is revoked once the server installs the new one. 90 days follows the CIS AWS Foundations Benchmark.",
+      "label": "Key rotation of {{name}}",
+      "legend": "Key rotation",
+      "off": "Don’t replace keys automatically",
+      "offDescription": "Each key stays in use until you rotate it, so a leaked key keeps working until then.",
+      "on": "Replace keys automatically",
+      "saved": "Key rotation saved.",
+      "submit": "Save key rotation",
+      "summary": "Change key rotation"
+    },
     "title": "Backup storage accounts"
   },
   "common": {

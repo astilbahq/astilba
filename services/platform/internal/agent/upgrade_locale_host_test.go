@@ -2,10 +2,9 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
@@ -13,11 +12,13 @@ import (
 )
 
 // nativeUpgradeLocaleRefusals checks, from the preflight's helper, that the upgrade refuses what
-// the new cluster would give another encoding or locale (PLAT-602). It leaves source's template1
-// and postgres as initdb made them, but for their comments and oids. image is source's release.
-func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, source string, a domain.Application, p deployment.Plan, image string) {
+// the new cluster, which target's initdb makes, would give another encoding, locale or setting
+// (PLAT-602, PLAT-614, PLAT-615). It leaves source's template1 and postgres as initdb made them,
+// but for their comments and oids. image is source's release, and s the upgrade of source.
+func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, source string, a domain.Application, s upgradeState, target domain.PostgresRelease, image string) {
 	t.Helper()
 	ctx := context.Background()
+	refusal := "an encoding, locale or setting other than what PostgreSQL " + target.Name() + "'s initdb gives the new cluster requires a separate recipe: "
 	var err error
 	// A superuser can drop template1 or postgres and create it again from template0, with
 	// initdb's flags, owner, grants and connection limit, in another encoding or locale,
@@ -37,7 +38,7 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 	}
 	for _, database := range []struct{ name, called string }{{"template1", "template1"}, {"postgres", "the postgres maintenance database"}} {
 		recreate(database.name, "")
-		if err = e.upgradeDatabaseChecks(ctx, helper, a); err != nil {
+		if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err != nil {
 			t.Fatalf("%s created again from template0 as initdb made it was refused: %v", database.name, err)
 		}
 		for _, variant := range []struct{ options, differs string }{
@@ -48,28 +49,60 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 			{"LOCALE_PROVIDER icu ICU_LOCALE 'en-US' ICU_RULES '&a < b'", "(locale provider, ICU or builtin locale, ICU rules)"},
 		} {
 			recreate(database.name, variant.options)
-			if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "an encoding or locale other than template0's") || !strings.Contains(err.Error(), database.called+" "+variant.differs) {
+			if err = e.upgradeDatabaseChecks(ctx, helper, a, target); err == nil || err.Error() != refusal+database.called+" "+variant.differs {
 				t.Fatalf("%s created again with %s wasn't refused by name: %v", database.name, variant.options, err)
 			}
 		}
 		recreate(database.name, "")
 	}
-	// A cluster of its own, before the owner model, for what the source must keep: the
-	// application's database made again in another encoding, and template0, which can be
-	// dropped once it isn't a template but never made again under oid 4.
+	// A superuser's ALTER SYSTEM is refused before the server reloads it, since the isolated
+	// source, a fresh start, would read it only once the writers have stopped (PLAT-615). So is a
+	// text search configuration outside pg_catalog, which the preflight's sessions can't find and
+	// pg_file_settings so reads as not applicable, but a fresh start takes.
+	public := pgClient{container: source, env: []string{"PGOPTIONS=-c search_path=public,pg_catalog"}}
+	for _, statement := range []struct {
+		sql, want string
+		as        pgClient
+	}{
+		{"ALTER SYSTEM SET lc_monetary = 'C'", refusal + "the server's settings (lc_monetary)", pgClient{container: source}},
+		{"ALTER SYSTEM RESET lc_monetary", "", pgClient{container: source}},
+		{"CREATE TEXT SEARCH CONFIGURATION public.searched (COPY = pg_catalog.english)", "", public},
+		{"ALTER SYSTEM SET default_text_search_config = 'searched'", refusal + "the server's settings (default_text_search_config)", public},
+		{"ALTER SYSTEM RESET default_text_search_config", "", public},
+		{"DROP TEXT SEARCH CONFIGURATION public.searched", "", public},
+	} {
+		if _, err = e.pgQuery(ctx, statement.as, a, statement.sql); err != nil {
+			t.Fatalf("%s: %v", statement.sql, err)
+		}
+		if err = e.upgradeDatabaseChecks(ctx, helper, a, target); statement.want == "" && err != nil || statement.want != "" && (err == nil || err.Error() != statement.want) {
+			t.Fatalf("after %s, without a reload: %v", statement.sql, err)
+		}
+	}
+	// Clusters of their own, before the owner model, for what the source must keep: the
+	// application's database made again in another encoding, template0, which can be dropped
+	// once it isn't a template but never made again under oid 4, and the variables a database
+	// from before the owner model keeps, which reach its initdb (PLAT-614, PLAT-615).
 	t.Run("legacy_cluster_locale", func(t *testing.T) {
-		created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: image, Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=locale-fixture-password"}, Labels: visualLabels(p, uuid.New())}, HostConfig: &container.HostConfig{NetworkMode: "none"}})
-		if err != nil {
-			t.Fatal(err)
+		start := func(variables ...string) pgClient {
+			t.Helper()
+			created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: image, Env: append([]string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=locale-fixture-password"}, variables...), Labels: visualLabels(s.Command.Plan.Source, uuid.New())}, HostConfig: &container.HostConfig{NetworkMode: "none"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_, _ = e.Docker.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+			})
+			if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			return pgClient{container: created.ID}
 		}
-		defer func() {
-			_, _ = e.Docker.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-		}()
-		if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-			t.Fatal(err)
-		}
-		if err = e.waitPostgresStartup(ctx, created.ID, "app", "app"); err != nil {
-			t.Fatal(err)
+		// They start together, so their initdbs overlap.
+		cluster, lang, monetary := start(), start("LANG=C.UTF-8"), start("LC_MONETARY=C", "TZ=Europe/London")
+		for _, c := range []pgClient{cluster, lang, monetary} {
+			if err := e.waitPostgresStartup(ctx, c.container, "app", "app"); err != nil {
+				t.Fatal(err)
+			}
 		}
 		legacy := a
 		legacyPG := *a.Postgres
@@ -79,8 +112,25 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 		maintenancePG := legacyPG
 		maintenancePG.Database = "postgres"
 		maintenance.Postgres = &maintenancePG
-		cluster := pgClient{container: created.ID}
-		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err != nil {
+		// The preflight itself refuses the variables' clusters, from a helper in each one's
+		// namespace, before any writer stops.
+		preflight := func(c pgClient) error {
+			t.Helper()
+			bounded, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			state := s
+			state.Command.Plan.ID = uuid.New()
+			_, err := e.upgradePreflight(bounded, state, c.container, legacy)
+			return err
+		}
+		mismatch := " (LC_COLLATE, LC_CTYPE)"
+		if err := preflight(lang); err == nil || err.Error() != refusal+"the application database"+mismatch+"; the postgres maintenance database"+mismatch+"; the server's settings (lc_messages, lc_monetary, lc_numeric, lc_time); template0"+mismatch+"; template1"+mismatch {
+			t.Fatalf("a cluster made with LANG=C.UTF-8 wasn't refused at preflight by name: %v", err)
+		}
+		if err := preflight(monetary); err == nil || err.Error() != refusal+"the server's settings (lc_monetary, TimeZone)" {
+			t.Fatalf("a cluster made with LC_MONETARY=C and TZ=Europe/London wasn't refused at preflight by name: %v", err)
+		}
+		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy, target); err != nil {
 			t.Fatal("a cluster as initdb made it was refused:", err)
 		}
 		for _, statement := range []string{"DROP DATABASE app WITH (FORCE)", "CREATE DATABASE app TEMPLATE template0 ENCODING 'LATIN1' LOCALE 'C'"} {
@@ -88,7 +138,7 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 				t.Fatalf("%s: %v", statement, err)
 			}
 		}
-		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err == nil || !strings.Contains(err.Error(), "the application database (encoding, LC_COLLATE, LC_CTYPE)") {
+		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy, target); err == nil || err.Error() != refusal+"the application database (encoding, LC_COLLATE, LC_CTYPE)" {
 			t.Fatalf("the application's database made again in LATIN1 wasn't refused by name: %v", err)
 		}
 		for _, statement := range []string{"ALTER DATABASE template0 IS_TEMPLATE false", "DROP DATABASE template0"} {
@@ -96,7 +146,7 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 				t.Fatalf("%s: %v", statement, err)
 			}
 		}
-		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err == nil || !strings.Contains(err.Error(), "template0") || strings.Contains(err.Error(), "encoding or locale") {
+		if err = e.upgradeDatabaseChecks(ctx, cluster, legacy, target); err == nil || err.Error() != "a cluster without template0 requires a separate recipe" {
 			t.Fatalf("a cluster without template0 wasn't refused for it: %v", err)
 		}
 	})

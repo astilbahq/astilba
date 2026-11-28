@@ -16,11 +16,24 @@ SELECT workspace_id,id,encrypted_secret FROM backup_storage_keys WHERE encrypted
 UPDATE backup_storage_keys SET encrypted_secret=$3 WHERE workspace_id=$1 AND id=$2;
 
 -- name: ListBackupDestinations :many
--- placeholder is as BackupDestinationBinding has it.
+-- placeholder is as BackupDestinationBinding has it. A managed destination's rotation is as
+-- BackupDestinationKeyState reads it: whether the owner's request waits for its key, and, for the
+-- view's due date, how many server keys are active, when the newest was activated, and whether its
+-- server is revoked.
 SELECT d.configuration, d.server_id, d.shared, d.account_id, d.remint_error,
     (d.account_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k
-        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder
-FROM backup_destinations d WHERE d.workspace_id = @workspace_id ORDER BY d.id LIMIT 100;
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.activated_at IS NOT NULL))::bool AS placeholder,
+    COALESCE(d.rekey_requested_at > n.activated_at,false)::bool AS rotation_requested,
+    (SELECT count(*) FROM backup_storage_keys k
+        WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state = 'active')::bigint AS active_keys,
+    n.activated_at AS key_activated_at, a.key_rotation_days, COALESCE(s.revoked,false)::bool AS server_revoked
+FROM backup_destinations d
+LEFT JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id
+LEFT JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+LEFT JOIN LATERAL (SELECT k.activated_at FROM backup_storage_keys k
+    WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state = 'active'
+    ORDER BY k.activated_at DESC LIMIT 1) n ON true
+WHERE d.workspace_id = @workspace_id ORDER BY d.id LIMIT 100;
 
 -- name: CountBackupDestinations :one
 SELECT count(*) FROM backup_destinations WHERE workspace_id = @workspace_id;

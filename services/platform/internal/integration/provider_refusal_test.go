@@ -65,8 +65,11 @@ func TestRateLimitedProviderKeepsTheBuildWaiting(t *testing.T) {
 		status int
 		header map[string]string
 		body   string
+		// match is the refused request's path, the repository's own unless set.
+		match string
 	}{
 		{name: "403 with retry-after", status: http.StatusForbidden, header: map[string]string{"Retry-After": "60"}, body: `{"message":"forbidden"}`},
+		{name: "push check under the limit", status: http.StatusForbidden, header: map[string]string{"Retry-After": "60"}, body: `{"message":"forbidden"}`, match: "/branches/" + pushCheckBranch},
 		{name: "403 with a used-up limit", status: http.StatusForbidden, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}},
 		{name: "403 with GitLab's used-up limit", status: http.StatusForbidden, header: map[string]string{"RateLimit-Remaining": "0", "RateLimit-Reset": reset}},
 		{name: "403 saying so", status: http.StatusForbidden, body: `{"message":"API rate limit exceeded for 203.0.113.7."}`},
@@ -88,6 +91,11 @@ func TestRateLimitedProviderKeepsTheBuildWaiting(t *testing.T) {
 				}
 			}
 			refuse, restore := refuseRepository(tc.status, tc.header, tc.body), func() { r.provider.refusing.Store(nil) }
+			if tc.match != "" {
+				refuse = func(r *refusalRunner) {
+					r.provider.refusing.Store(&providerRefusal{match: tc.match, status: tc.status, header: tc.header, body: tc.body})
+				}
+			}
 
 			queued := r.createBuild(t, r.config)
 			refuse(r)

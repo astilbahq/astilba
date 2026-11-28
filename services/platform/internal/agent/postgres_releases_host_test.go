@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,11 +46,69 @@ func TestNativePostgresReleases(t *testing.T) {
 	page := reindexPage
 	reindexPage = 2
 	t.Cleanup(func() { reindexPage = page })
+	t.Run("initdb_records", func(t *testing.T) { nativePostgresInitdbRecords(t, e, base) })
 	t.Run("backups_from_earlier_releases", func(t *testing.T) { nativePostgresMetadataRestore(t, e, base) })
 	for _, major := range []int{17, 18} {
 		t.Run(fmt.Sprintf("postgres%d_in_place_update", major), func(t *testing.T) {
 			nativePostgresInPlaceUpdate(t, e, base, major)
 		})
+	}
+}
+
+// Each release's initdb record is what its image gives a cluster the agent creates, as the
+// upgrade's target and a restore's are, which the upgrade's preflight holds its source to.
+func nativePostgresInitdbRecords(t *testing.T, e *Engine, base deployment.Plan) {
+	ctx := context.Background()
+	env, err := bootstrapEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases := domain.PostgresReleases()
+	errs := make([]error, len(releases))
+	var wg sync.WaitGroup
+	// The clusters are made together, so their initdbs overlap.
+	for n, r := range releases {
+		wg.Go(func() {
+			volume := uuid.New()
+			if _, err := e.Docker.VolumeCreate(ctx, client.VolumeCreateOptions{Name: deployment.VolumeName(volume), Labels: visualLabels(base, volume)}); err != nil {
+				errs[n] = err
+				return
+			}
+			defer func() {
+				_, _ = e.Docker.VolumeRemove(ctx, deployment.VolumeName(volume), client.VolumeRemoveOptions{Force: true})
+			}()
+			i := r.Initdb
+			// The preflight tells no locale, NULL, from an empty one.
+			locale := i.Locale
+			if locale == "" {
+				locale = "<null>"
+			}
+			database := strings.Join([]string{i.Encoding, i.LocaleProvider, i.Collate, i.Ctype, locale, "true"}, "|")
+			want := "postgres|" + database + "\ntemplate0|" + database + "\ntemplate1|" + database
+			var named []string
+			for _, setting := range i.Settings() {
+				want += "\n" + setting[0] + "=" + setting[1]
+				named = append(named, quoteLiteral(setting[0]))
+			}
+			names := strings.Join(named, ", ")
+			errs[n] = e.runIsolated(ctx, isolatedCluster{name: "astilba-initdb-" + volume.String(), labels: visualLabels(base, volume), release: r, volume: volume, env: env}, func(id string) error {
+				// inline-sql: reads a managed database's catalog, not the platform database.
+				raw, err := e.dataOutput(ctx, pgClient{container: id}, "psql", "-XAqt", "-v", "ON_ERROR_STOP=1", "-U", domain.PostgresSuperuser, "-d", "postgres", "-c", "SELECT datname || '|' || pg_encoding_to_char(encoding) || '|' || datlocprovider::text || '|' || datcollate || '|' || datctype || '|' || coalesce(datlocale, '<null>') || '|' || (daticurules IS NULL) FROM pg_database ORDER BY datname COLLATE \"C\"", "-c", "SELECT name || '=' || setting FROM pg_settings WHERE name IN ("+names+") ORDER BY array_position(ARRAY["+names+"], name)")
+				if err != nil {
+					return err
+				}
+				if got := strings.TrimSpace(string(raw)); got != want {
+					return fmt.Errorf("its initdb gave\n%s\nnot its record's\n%s", got, want)
+				}
+				return nil
+			})
+		})
+	}
+	wg.Wait()
+	for n, err := range errs {
+		if err != nil {
+			t.Errorf("PostgreSQL %s: %v", releases[n].Name(), err)
+		}
 	}
 }
 

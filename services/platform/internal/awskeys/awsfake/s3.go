@@ -33,9 +33,7 @@ func (a *AWS) s3(w http.ResponseWriter, r *http.Request, who caller, body []byte
 		conditions["aws:TokenIssueTime"] = time.Now().UTC().Format(time.RFC3339)
 	}
 	a.count(action)
-	if a.Before != nil {
-		a.Before(action)
-	}
+	a.hook(action)
 	if failed := a.injected(action); failed != "" {
 		s3Error(w, failed)
 		return

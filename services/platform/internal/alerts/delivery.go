@@ -303,6 +303,8 @@ func Title(kind api.AlertKind) string {
 		return "A revoked server holds a backup destination's storage keys"
 	case api.BackupAccount:
 		return "A backup storage account's check failed or found keys management didn't make"
+	case api.BackupPeerUser:
+		return "A backup storage account has a peer installation's user to acknowledge"
 	default:
 		return "Operational alert"
 	}

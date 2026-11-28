@@ -16,9 +16,23 @@ test("preview policy retains failed inputs and approves only the displayed fork 
   const sha = "b".repeat(40);
   const provider = createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
-    // Gitea refuses the receive-pack advertisement to a credential that can only read.
+    // Gitea refuses the receive-pack advertisement to a credential that can only read, in a bare
+    // Forbidden, and its API refuses that token a write request for lacking write:repository.
     if (request.url === "/team/app.git/info/refs?service=git-receive-pack") {
-      response.writeHead(403).end();
+      response.setHeader("Content-Type", "text/plain");
+      response.writeHead(403).end("Forbidden\n");
+      return;
+    }
+    if (
+      request.method === "DELETE" &&
+      request.url === "/api/v1/repos/team/app/branches/astilba..push-check"
+    ) {
+      response.writeHead(403).end(
+        JSON.stringify({
+          message:
+            "token does not have at least one of required scope(s), required=[write:repository], token scope=read:repository",
+        }),
+      );
       return;
     }
     if (request.url?.includes("/branches/")) {

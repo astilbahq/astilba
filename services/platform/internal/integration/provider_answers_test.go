@@ -62,12 +62,29 @@ func mergedAnswer(number int, commit string) map[string]any {
 	return answer
 }
 
-// answerReceivePack answers a Git server's push check as it does for a credential that can only
-// read, which is all a connection's clone credential may be.
-func answerReceivePack(w http.ResponseWriter, r *http.Request) bool {
-	if !strings.HasSuffix(r.URL.Path, ".git/info/refs") {
+// answerPushCheck answers the push check as Gitea does for a token with only read:repository,
+// which is all a connection's clone credential may be: Git's receive-pack advertisement is
+// refused with a bare "Forbidden", and the write request Astilba then asks of the API with a
+// scope refusal, before Gitea looks for the repository.
+func answerPushCheck(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case !pushCheck(r):
 		return false
+	case r.Method == http.MethodDelete:
+		w.Header().Set("Content-Type", "application/json;charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_ = stablejson.Encode(w, map[string]string{"message": "token does not have at least one of required scope(s), required=[write:repository], token scope=read:repository", "url": "http://" + r.Host + "/api/swagger"})
+	default:
+		http.Error(w, "Forbidden", http.StatusForbidden)
 	}
-	w.WriteHeader(http.StatusForbidden)
 	return true
+}
+
+// pushCheckBranch is the branch no repository can have that the push check asks Gitea's API to
+// delete.
+const pushCheckBranch = "astilba..push-check"
+
+// pushCheck reports whether r is one of the push check's requests.
+func pushCheck(r *http.Request) bool {
+	return strings.HasSuffix(r.URL.Path, ".git/info/refs") || r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.HasSuffix(r.URL.Path, "/branches/"+pushCheckBranch)
 }

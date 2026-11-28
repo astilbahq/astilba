@@ -29,7 +29,40 @@ type PostgresRelease struct {
 	// Mount is where the image expects its volume, and DataDirectory is the cluster in it.
 	Mount         string
 	DataDirectory string
+	// Initdb is what the release gives a cluster the agent creates.
+	Initdb PostgresInitdb
 }
+
+// PostgresInitdb is what a release's initdb gives a cluster the agent creates, which has only the
+// image's own environment and no initdb arguments: the encoding and locale of each database it
+// makes, and the settings it writes to postgresql.conf from that environment that change what a
+// client reads. A cluster initdb made with other variables, such as LANG, LC_MONETARY or TZ, or one
+// whose databases or settings a superuser changed later, differs from it. TestNativePostgresReleases
+// checks each release's record against a cluster its image makes.
+type PostgresInitdb struct {
+	// Encoding is the encoding's name, such as UTF8.
+	Encoding string
+	// LocaleProvider is pg_database.datlocprovider: c for libc, i for ICU or b for builtin.
+	LocaleProvider string
+	// Collate and Ctype are LC_COLLATE and LC_CTYPE.
+	Collate, Ctype string
+	// Locale is the ICU or builtin locale, empty for libc, which has none. initdb sets no ICU rules.
+	Locale string
+	// The settings below are named by PostgreSQL in Settings. initdb sets lc_messages, lc_monetary,
+	// lc_numeric and lc_time from the locale categories of its environment, DateStyle and
+	// default_text_search_config from LC_TIME and LC_CTYPE, and TimeZone from TZ or the system's
+	// zone. log_timezone, which only the server's log shows, is left out.
+	Messages, Monetary, Numeric, Time, DateStyle, TextSearch, TimeZone string
+}
+
+// Settings lists the record's postgresql.conf settings as PostgreSQL name, value pairs.
+func (i PostgresInitdb) Settings() [][2]string {
+	return [][2]string{{"lc_messages", i.Messages}, {"lc_monetary", i.Monetary}, {"lc_numeric", i.Numeric}, {"lc_time", i.Time}, {"DateStyle", i.DateStyle}, {"default_text_search_config", i.TextSearch}, {"TimeZone", i.TimeZone}}
+}
+
+// alpineInitdb is what the alpine3.23 images give a cluster: their LANG is en_US.utf8, and they set
+// no other locale variable or TZ and have no system time zone.
+var alpineInitdb = PostgresInitdb{Encoding: "UTF8", LocaleProvider: "c", Collate: "en_US.utf8", Ctype: "en_US.utf8", Messages: "en_US.utf8", Monetary: "en_US.utf8", Numeric: "en_US.utf8", Time: "en_US.utf8", DateStyle: "ISO, MDY", TextSearch: "pg_catalog.english", TimeZone: "UTC"}
 
 // postgresReindex lists, by the PostgreSQL release that fixed them, the indexes release notes say
 // to rebuild after updating, because the fix does not repair entries already written. Each query
@@ -111,10 +144,10 @@ func ExclusionIndexes(query string) string {
 
 // postgresReleases lists every pinned release, oldest first within each major.
 var postgresReleases = []PostgresRelease{
-	{Image: "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4", Version: 170010, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"},
-	{Image: Postgres17Image, Version: 170012, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data"},
-	{Image: "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e", Version: 180004, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"},
-	{Image: PostgresImage, Version: 180007, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker"},
+	{Image: "postgres:17.10-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4", Version: 170010, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data", Initdb: alpineInitdb},
+	{Image: Postgres17Image, Version: 170012, Line: "alpine3.23", Mount: "/var/lib/postgresql/data", DataDirectory: "/var/lib/postgresql/data", Initdb: alpineInitdb},
+	{Image: "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e", Version: 180004, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker", Initdb: alpineInitdb},
+	{Image: PostgresImage, Version: 180007, Line: "alpine3.23", Mount: "/var/lib/postgresql", DataDirectory: "/var/lib/postgresql/18/docker", Initdb: alpineInitdb},
 }
 
 // PostgresReleases returns every known release, oldest first within each major.

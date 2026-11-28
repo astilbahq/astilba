@@ -63,6 +63,34 @@ func (q *Queries) AccountBackupStorageKeys(ctx context.Context, arg AccountBacku
 	return items, nil
 }
 
+const acknowledgeBackupStorageUser = `-- name: AcknowledgeBackupStorageUser :exec
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
+VALUES($1,$2,$3,$4,$5,$6,$7::text[])
+`
+
+type AcknowledgeBackupStorageUserParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ID           uuid.UUID `json:"id"`
+	AccountID    uuid.UUID `json:"account_id"`
+	Identity     uuid.UUID `json:"identity"`
+	UserName     string    `json:"user_name"`
+	IamUserID    string    `json:"iam_user_id"`
+	AccessKeyIds []string  `json:"access_key_ids"`
+}
+
+func (q *Queries) AcknowledgeBackupStorageUser(ctx context.Context, arg AcknowledgeBackupStorageUserParams) error {
+	_, err := q.db.Exec(ctx, acknowledgeBackupStorageUser,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.AccountID,
+		arg.Identity,
+		arg.UserName,
+		arg.IamUserID,
+		arg.AccessKeyIds,
+	)
+	return err
+}
+
 const activateBackupStorageKey = `-- name: ActivateBackupStorageKey :execrows
 UPDATE backup_storage_keys k SET state='active',activated_at=clock_timestamp(),access_key_id = $1,encrypted_secret = $2,installs = $3,recovery_id = $4
 FROM servers s
@@ -144,6 +172,47 @@ func (q *Queries) AlertingBackupStorageAccounts(ctx context.Context, workspaceID
 		return nil, err
 	}
 	return items, nil
+}
+
+const backupDestinationKeyState = `-- name: BackupDestinationKeyState :one
+SELECT k.active::bigint AS active,k.minting::bigint AS minting,k.activated::bigint AS activated,
+    COALESCE(d.rekey_requested_at > k.newest,false)::bool AS requested,
+    COALESCE(k.newest + make_interval(hours => 24 * a.key_rotation_days) <= clock_timestamp(),false)::bool AS due
+FROM backup_destinations d
+JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+        count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+    FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+WHERE d.workspace_id = $1 AND d.id = $2
+`
+
+type BackupDestinationKeyStateParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+type BackupDestinationKeyStateRow struct {
+	Active    int64 `json:"active"`
+	Minting   int64 `json:"minting"`
+	Activated int64 `json:"activated"`
+	Requested bool  `json:"requested"`
+	Due       bool  `json:"due"`
+}
+
+// A managed destination's server keys, by ClaimDueBackupRemint's reading: how many are active,
+// minting, or were ever active; whether the owner asked for the newest active one to be replaced;
+// and whether it is older than its account's key_rotation_days.
+func (q *Queries) BackupDestinationKeyState(ctx context.Context, arg BackupDestinationKeyStateParams) (BackupDestinationKeyStateRow, error) {
+	row := q.db.QueryRow(ctx, backupDestinationKeyState, arg.WorkspaceID, arg.ID)
+	var i BackupDestinationKeyStateRow
+	err := row.Scan(
+		&i.Active,
+		&i.Minting,
+		&i.Activated,
+		&i.Requested,
+		&i.Due,
+	)
+	return i, err
 }
 
 const backupStorageAccount = `-- name: BackupStorageAccount :one
@@ -235,9 +304,12 @@ const claimDueBackupRemint = `-- name: ClaimDueBackupRemint :one
 UPDATE backup_destinations SET remint_next_at=clock_timestamp() + interval '10 minutes'
 WHERE id=(SELECT d.id FROM backup_destinations d
     JOIN servers s ON s.workspace_id = d.workspace_id AND s.id = d.server_id AND NOT s.revoked
-    WHERE d.account_id IS NOT NULL AND (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp())
-        AND EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.activated_at IS NOT NULL)
-        AND NOT EXISTS(SELECT 1 FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server' AND k.state IN ('minting','active'))
+    JOIN backup_storage_accounts a ON a.workspace_id = d.workspace_id AND a.id = d.account_id
+    CROSS JOIN LATERAL (SELECT count(*) FILTER (WHERE k.state = 'active') AS active,count(*) FILTER (WHERE k.state = 'minting') AS minting,
+            count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
+        FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
+    WHERE (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp()) AND k.activated > 0 AND k.minting = 0
+        AND (k.active = 0 OR k.active = 1 AND (d.rekey_requested_at > k.newest OR k.newest <= clock_timestamp() - make_interval(hours => 24 * a.key_rotation_days)) OR d.remint_error IS NOT NULL)
     ORDER BY d.remint_next_at NULLS FIRST,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
 RETURNING workspace_id,id
 `
@@ -247,8 +319,12 @@ type ClaimDueBackupRemintRow struct {
 	ID          uuid.UUID `json:"id"`
 }
 
-// unscoped: a managed destination whose server isn't revoked, that once had a key and now has no
-// active or minting one. Claiming pushes its next attempt on before the mint runs.
+// unscoped: a managed destination whose server isn't revoked, that once had a key and has none
+// minting, and either has no active one, a renewed server's, or has one the owner asked to replace
+// or that is older than its account's key_rotation_days, as BackupDestinationKeyState reads it.
+// One whose re-mint failed is claimed even once it no longer needs a key, for example after the
+// owner turned rotation off, so its job clears the failure. Claiming pushes its next attempt on
+// before the mint runs.
 func (q *Queries) ClaimDueBackupRemint(ctx context.Context) (ClaimDueBackupRemintRow, error) {
 	row := q.db.QueryRow(ctx, claimDueBackupRemint)
 	var i ClaimDueBackupRemintRow
@@ -317,6 +393,23 @@ func (q *Queries) ClaimDueBackupStorageKey(ctx context.Context, stalledWorkspace
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const clearServerBackupRemints = `-- name: ClearServerBackupRemints :exec
+UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
+WHERE workspace_id = $1 AND server_id = $2 AND account_id IS NOT NULL
+`
+
+type ClearServerBackupRemintsParams struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ServerID    *uuid.UUID `json:"server_id"`
+}
+
+// A revoked server's destinations need no new key until it is renewed, so a failure to make one
+// no longer stands.
+func (q *Queries) ClearServerBackupRemints(ctx context.Context, arg ClearServerBackupRemintsParams) error {
+	_, err := q.db.Exec(ctx, clearServerBackupRemints, arg.WorkspaceID, arg.ServerID)
+	return err
 }
 
 const currentBackupStorageKey = `-- name: CurrentBackupStorageKey :one
@@ -483,42 +576,35 @@ func (q *Queries) DestinationPolicyGenerations(ctx context.Context, arg Destinat
 	return items, nil
 }
 
-const destinationServerKeys = `-- name: DestinationServerKeys :many
-SELECT k.workspace_id,k.destination_id,k.id,k.holder_server_id,k.activated_at,k.installs
-FROM backup_storage_keys k
-WHERE k.purpose = 'server' AND k.state = 'active'
-    AND EXISTS(SELECT 1 FROM backup_storage_keys o WHERE o.workspace_id = k.workspace_id AND o.destination_id = k.destination_id AND o.purpose = 'server' AND o.state = 'active' AND o.id <> k.id)
-ORDER BY k.workspace_id,k.destination_id,k.activated_at DESC,k.id DESC
-LIMIT 1000
+const foundBackupStorageAcknowledgements = `-- name: FoundBackupStorageAcknowledgements :many
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = $1
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000
 `
 
-type DestinationServerKeysRow struct {
-	WorkspaceID    uuid.UUID  `json:"workspace_id"`
-	DestinationID  *uuid.UUID `json:"destination_id"`
-	ID             uuid.UUID  `json:"id"`
-	HolderServerID *uuid.UUID `json:"holder_server_id"`
-	ActivatedAt    *time.Time `json:"activated_at"`
-	Installs       []byte     `json:"installs"`
+type FoundBackupStorageAcknowledgementsRow struct {
+	AccountID      uuid.UUID `json:"account_id"`
+	Identity       uuid.UUID `json:"identity"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
 }
 
-// unscoped: the sweep's view of every managed destination's active server keys, newest first.
-func (q *Queries) DestinationServerKeys(ctx context.Context) ([]DestinationServerKeysRow, error) {
-	rows, err := q.db.Query(ctx, destinationServerKeys)
+// When the newest acknowledgement covering each user the accounts' latest checks found was made,
+// by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+// account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+func (q *Queries) FoundBackupStorageAcknowledgements(ctx context.Context, workspaceID uuid.UUID) ([]FoundBackupStorageAcknowledgementsRow, error) {
+	rows, err := q.db.Query(ctx, foundBackupStorageAcknowledgements, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DestinationServerKeysRow{}
+	items := []FoundBackupStorageAcknowledgementsRow{}
 	for rows.Next() {
-		var i DestinationServerKeysRow
-		if err := rows.Scan(
-			&i.WorkspaceID,
-			&i.DestinationID,
-			&i.ID,
-			&i.HolderServerID,
-			&i.ActivatedAt,
-			&i.Installs,
-		); err != nil {
+		var i FoundBackupStorageAcknowledgementsRow
+		if err := rows.Scan(&i.AccountID, &i.Identity, &i.AcknowledgedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -564,18 +650,19 @@ func (q *Queries) HandOverServerBackupStorageKeys(ctx context.Context, arg HandO
 }
 
 const insertBackupStorageAccount = `-- name: InsertBackupStorageAccount :exec
-INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential)
-VALUES($1,$2,$3,$4,$5,$6,$7)
+INSERT INTO backup_storage_accounts(id,workspace_id,name,aws_account,admin_arn,boundary,encrypted_credential,key_rotation_days)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8)
 `
 
 type InsertBackupStorageAccountParams struct {
-	ID                  uuid.UUID `json:"id"`
-	WorkspaceID         uuid.UUID `json:"workspace_id"`
-	Name                string    `json:"name"`
-	AwsAccount          string    `json:"aws_account"`
-	AdminArn            string    `json:"admin_arn"`
-	Boundary            string    `json:"boundary"`
-	EncryptedCredential []byte    `json:"encrypted_credential"`
+	ID                  uuid.UUID   `json:"id"`
+	WorkspaceID         uuid.UUID   `json:"workspace_id"`
+	Name                string      `json:"name"`
+	AwsAccount          string      `json:"aws_account"`
+	AdminArn            string      `json:"admin_arn"`
+	Boundary            string      `json:"boundary"`
+	EncryptedCredential []byte      `json:"encrypted_credential"`
+	KeyRotationDays     pgtype.Int4 `json:"key_rotation_days"`
 }
 
 func (q *Queries) InsertBackupStorageAccount(ctx context.Context, arg InsertBackupStorageAccountParams) error {
@@ -587,6 +674,7 @@ func (q *Queries) InsertBackupStorageAccount(ctx context.Context, arg InsertBack
 		arg.AdminArn,
 		arg.Boundary,
 		arg.EncryptedCredential,
+		arg.KeyRotationDays,
 	)
 	return err
 }
@@ -627,7 +715,7 @@ func (q *Queries) InsertBackupStorageKey(ctx context.Context, arg InsertBackupSt
 	return err
 }
 
-const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :exec
+const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :execrows
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES($1,$2,$3,'found',$4,$5,'revoking')
 ON CONFLICT (user_name) DO NOTHING
@@ -641,16 +729,20 @@ type InsertFoundBackupStorageKeyParams struct {
 	FoundTags   []byte    `json:"found_tags"`
 }
 
-// A user the account check found with no row, latched for the sweep to revoke.
-func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) error {
-	_, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
+// A user the account check found with no row, latched for the sweep to revoke. A name that already
+// has a row inserts nothing.
+func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
 		arg.ID,
 		arg.WorkspaceID,
 		arg.AccountID,
 		arg.UserName,
 		arg.FoundTags,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const installOperationState = `-- name: InstallOperationState :one
@@ -794,24 +886,25 @@ func (q *Queries) LatchServerBackupStorageKeys(ctx context.Context, arg LatchSer
 }
 
 const listBackupStorageAccounts = `-- name: ListBackupStorageAccounts :many
-SELECT id,name,aws_account,admin_arn,boundary,generation,peers,reported_at,check_error,report,created_at,
+SELECT id,name,aws_account,admin_arn,boundary,generation,peers,key_rotation_days,reported_at,check_error,report,created_at,
     (checked_at IS NULL OR ((reported_at IS NULL OR reported_at < checked_at) AND checked_at > clock_timestamp() - interval '10 minutes'))::bool AS checking
 FROM backup_storage_accounts WHERE workspace_id = $1 ORDER BY name,id LIMIT 100
 `
 
 type ListBackupStorageAccountsRow struct {
-	ID         uuid.UUID   `json:"id"`
-	Name       string      `json:"name"`
-	AwsAccount string      `json:"aws_account"`
-	AdminArn   string      `json:"admin_arn"`
-	Boundary   string      `json:"boundary"`
-	Generation int64       `json:"generation"`
-	Peers      []uuid.UUID `json:"peers"`
-	ReportedAt *time.Time  `json:"reported_at"`
-	CheckError pgtype.Text `json:"check_error"`
-	Report     []byte      `json:"report"`
-	CreatedAt  time.Time   `json:"created_at"`
-	Checking   bool        `json:"checking"`
+	ID              uuid.UUID   `json:"id"`
+	Name            string      `json:"name"`
+	AwsAccount      string      `json:"aws_account"`
+	AdminArn        string      `json:"admin_arn"`
+	Boundary        string      `json:"boundary"`
+	Generation      int64       `json:"generation"`
+	Peers           []uuid.UUID `json:"peers"`
+	KeyRotationDays pgtype.Int4 `json:"key_rotation_days"`
+	ReportedAt      *time.Time  `json:"reported_at"`
+	CheckError      pgtype.Text `json:"check_error"`
+	Report          []byte      `json:"report"`
+	CreatedAt       time.Time   `json:"created_at"`
+	Checking        bool        `json:"checking"`
 }
 
 // checking is a check asked for and not yet claimed, or one claimed in the last ten minutes, as long
@@ -833,6 +926,7 @@ func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uui
 			&i.Boundary,
 			&i.Generation,
 			&i.Peers,
+			&i.KeyRotationDays,
 			&i.ReportedAt,
 			&i.CheckError,
 			&i.Report,
@@ -847,22 +941,6 @@ func (q *Queries) ListBackupStorageAccounts(ctx context.Context, workspaceID uui
 		return nil, err
 	}
 	return items, nil
-}
-
-const liveServerKeyExists = `-- name: LiveServerKeyExists :one
-SELECT EXISTS(SELECT 1 FROM backup_storage_keys WHERE workspace_id = $1 AND destination_id = $2 AND purpose = 'server' AND state IN ('minting','active'))::bool
-`
-
-type LiveServerKeyExistsParams struct {
-	WorkspaceID   uuid.UUID  `json:"workspace_id"`
-	DestinationID *uuid.UUID `json:"destination_id"`
-}
-
-func (q *Queries) LiveServerKeyExists(ctx context.Context, arg LiveServerKeyExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, liveServerKeyExists, arg.WorkspaceID, arg.DestinationID)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const managedBackupDestination = `-- name: ManagedBackupDestination :one
@@ -931,42 +1009,6 @@ func (q *Queries) PendingKeyInstalls(ctx context.Context) ([]PendingKeyInstallsR
 			&i.EnvironmentID,
 			&i.Generation,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const policyReportedGenerations = `-- name: PolicyReportedGenerations :many
-SELECT id,COALESCE((status->>'generation')::bigint,0)::bigint AS reported,(configuration->>'generation')::bigint AS configured
-FROM backup_policies WHERE workspace_id = $1 AND id = ANY($2::uuid[])
-`
-
-type PolicyReportedGenerationsParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	Ids         []uuid.UUID `json:"ids"`
-}
-
-type PolicyReportedGenerationsRow struct {
-	ID         uuid.UUID `json:"id"`
-	Reported   int64     `json:"reported"`
-	Configured int64     `json:"configured"`
-}
-
-func (q *Queries) PolicyReportedGenerations(ctx context.Context, arg PolicyReportedGenerationsParams) ([]PolicyReportedGenerationsRow, error) {
-	rows, err := q.db.Query(ctx, policyReportedGenerations, arg.WorkspaceID, arg.Ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []PolicyReportedGenerationsRow{}
-	for rows.Next() {
-		var i PolicyReportedGenerationsRow
-		if err := rows.Scan(&i.ID, &i.Reported, &i.Configured); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1204,6 +1246,22 @@ func (q *Queries) ReplaceBackupStorageAccountCredential(ctx context.Context, arg
 	return result.RowsAffected(), nil
 }
 
+const requestBackupRekey = `-- name: RequestBackupRekey :exec
+UPDATE backup_destinations SET rekey_requested_at=clock_timestamp(),remint_next_at=NULL
+WHERE workspace_id = $1 AND id = $2 AND account_id IS NOT NULL
+`
+
+type RequestBackupRekeyParams struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// The owner's request to replace a destination's key, which the next pass claims.
+func (q *Queries) RequestBackupRekey(ctx context.Context, arg RequestBackupRekeyParams) error {
+	_, err := q.db.Exec(ctx, requestBackupRekey, arg.WorkspaceID, arg.ID)
+	return err
+}
+
 const requestBackupStorageAccountCheck = `-- name: RequestBackupStorageAccountCheck :exec
 UPDATE backup_storage_accounts SET checked_at=NULL WHERE workspace_id = $1 AND id = $2
 `
@@ -1303,6 +1361,105 @@ func (q *Queries) RevokingFoundBackupStorageKeys(ctx context.Context, workspaceI
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setBackupStorageKeyRotation = `-- name: SetBackupStorageKeyRotation :execrows
+UPDATE backup_storage_accounts SET key_rotation_days = $1
+WHERE workspace_id = $2 AND id = $3
+`
+
+type SetBackupStorageKeyRotationParams struct {
+	KeyRotationDays pgtype.Int4 `json:"key_rotation_days"`
+	WorkspaceID     uuid.UUID   `json:"workspace_id"`
+	ID              uuid.UUID   `json:"id"`
+}
+
+func (q *Queries) SetBackupStorageKeyRotation(ctx context.Context, arg SetBackupStorageKeyRotationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setBackupStorageKeyRotation, arg.KeyRotationDays, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersededServerKeys = `-- name: SupersededServerKeys :many
+SELECT k.workspace_id,k.id
+FROM backup_storage_keys k
+CROSS JOIN LATERAL (SELECT n.id,n.installs FROM backup_storage_keys n
+    WHERE n.workspace_id = k.workspace_id AND n.destination_id = k.destination_id AND n.purpose = 'server' AND n.state = 'active'
+    ORDER BY n.activated_at DESC,n.id DESC LIMIT 1) n
+WHERE k.purpose = 'server' AND k.state = 'active' AND n.id <> k.id
+    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(n.installs) i
+        JOIN backup_policies p ON p.workspace_id = k.workspace_id AND p.id = (i->>'policy')::uuid
+        JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id AND e.state IN ('active','retiring')
+        WHERE COALESCE((p.status->>'generation')::bigint,0) < (i->>'generation')::bigint)
+ORDER BY k.workspace_id,k.id
+LIMIT 1000
+`
+
+type SupersededServerKeysRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// unscoped: the active server keys whose destination's newest active key has replaced them on
+// their holder. The holder reports every policy generation the newest key's installs carry, or the
+// policy is gone or in an environment whose retirement removed its schedules from the host
+// (retired, purging or purged), so it uses no key. A retired environment restored later installs
+// its policy at that generation, which carries the newest key.
+func (q *Queries) SupersededServerKeys(ctx context.Context) ([]SupersededServerKeysRow, error) {
+	rows, err := q.db.Query(ctx, supersededServerKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersededServerKeysRow{}
+	for rows.Next() {
+		var i SupersededServerKeysRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unacknowledgedPeerBackupStorageUsers = `-- name: UnacknowledgedPeerBackupStorageUsers :many
+SELECT (u.value->>'id')::uuid AS id FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+WHERE a.workspace_id = $1 AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
+    AND u.value->>'installationId' = ANY(a.peers::text[])
+    AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+            AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
+ORDER BY 1 LIMIT 10000
+`
+
+// The users each account's latest check found with its boundary and tagged with one of its peers,
+// as the account lists them now, that no acknowledgement covers. One covers a user when it has the
+// user's identity and holds every access key the check found on it. Management writes a peer's
+// tag as the UUID's canonical text, so a tag in any other form isn't a peer's.
+func (q *Queries) UnacknowledgedPeerBackupStorageUsers(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, unacknowledgedPeerBackupStorageUsers, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

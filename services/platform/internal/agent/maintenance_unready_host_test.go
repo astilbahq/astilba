@@ -15,6 +15,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
 	"github.com/astilbahq/astilba/services/platform/internal/hostnetwork"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -138,6 +139,11 @@ func newMaintenanceWriter(t *testing.T, app domain.Application, health *containe
 		remoteServer, link = newRemoteServer(t, docker)
 		// The proxy leaves the unit's network before the network goes.
 		t.Cleanup(func() {
+			// Every round removes its probe, so the server's probe is gone with its test.
+			if _, err := docker.ContainerInspect(context.Background(), routeProbeName(p.ServerID.String()), client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+				t.Errorf("a route probe container remains: %v", err)
+				_, _ = docker.ContainerRemove(context.Background(), routeProbeName(p.ServerID.String()), client.ContainerRemoveOptions{Force: true})
+			}
 			_, _ = docker.ContainerRemove(context.Background(), proxyName, client.ContainerRemoveOptions{Force: true})
 			_, _ = docker.NetworkRemove(context.Background(), "astilba-ingress-network", client.NetworkRemoveOptions{})
 		})

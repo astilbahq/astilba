@@ -54,7 +54,33 @@ func (s *Server) RevokeBackupStorageKey(w http.ResponseWriter, r *http.Request, 
 	e := s.Execution.RevokeBackupStorageKey(r.Context(), *principal(r.Context()), ws, destination, key)
 	s.executionResponse(w, r, 204, nil, e)
 }
+func (s *Server) RotateBackupStorageKey(w http.ResponseWriter, r *http.Request, ws, destination uuid.UUID) {
+	e := s.Execution.RotateBackupStorageKey(r.Context(), *principal(r.Context()), ws, destination)
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) SetBackupStorageKeyRotation(w http.ResponseWriter, r *http.Request, ws, account uuid.UUID) {
+	b, e := decode[api.BackupStorageKeyRotationRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	v, e := s.Execution.SetBackupStorageKeyRotation(r.Context(), *principal(r.Context()), ws, account, b)
+	s.executionResponse(w, r, 200, v, e)
+}
 func (s *Server) RetryBackupStorageKeys(w http.ResponseWriter, r *http.Request, ws, destination uuid.UUID) {
 	e := s.Execution.RetryBackupStorageKeys(r.Context(), *principal(r.Context()), ws, destination)
+	s.executionResponse(w, r, 204, nil, e)
+}
+func (s *Server) AcknowledgeFoundBackupStorageUser(w http.ResponseWriter, r *http.Request, ws, account uuid.UUID, user string) {
+	if e := urlNUL(r); e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	b, e := decode[api.BackupStorageAcknowledgementRequest](r)
+	if e != nil {
+		s.fail(w, r, e)
+		return
+	}
+	e = s.Execution.AcknowledgeFoundBackupStorageUser(r.Context(), *principal(r.Context()), ws, account, user, b)
 	s.executionResponse(w, r, 204, nil, e)
 }

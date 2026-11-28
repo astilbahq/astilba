@@ -1,7 +1,6 @@
 package awsfake
 
 import (
-	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
 	"maps"
@@ -38,7 +37,7 @@ type single struct {
 }
 
 func (u *user) xml(full bool) xUser {
-	x := xUser{Path: u.path, UserName: u.name, UserID: "AIDAFAKE" + strings.ToUpper(hex.EncodeToString([]byte(u.name)))[:min(12, 2*len(u.name))], Arn: "arn:aws:iam::" + Account + ":user" + u.path + u.name, CreateDate: u.created.UTC().Format(time.RFC3339)}
+	x := xUser{Path: u.path, UserName: u.name, UserID: u.id, Arn: "arn:aws:iam::" + Account + ":user" + u.path + u.name, CreateDate: u.created.UTC().Format(time.RFC3339)}
 	if full {
 		if u.boundary != "" {
 			x.PermissionsBoundary = &xBoundary{"PermissionsBoundaryPolicy", u.boundary}
@@ -182,7 +181,7 @@ func (a *AWS) query(w http.ResponseWriter, who caller, action string, f form) {
 			a.queryError(w, "NoSuchEntity")
 			return
 		}
-		u := &user{name: name, path: p, boundary: boundary, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
+		u := &user{id: a.userID(), name: name, path: p, boundary: boundary, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
 		for i := 1; f.Get("Tags.member."+strconv.Itoa(i)+".Key") != ""; i++ {
 			u.tags[f.Get("Tags.member."+strconv.Itoa(i)+".Key")] = f.Get("Tags.member." + strconv.Itoa(i) + ".Value")
 		}
