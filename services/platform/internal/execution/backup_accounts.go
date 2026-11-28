@@ -23,19 +23,19 @@ import (
 const backupAccountLimit = 10
 
 var (
-	errAccountCredential   = &domain.Error{Code: "invalid_input", Message: "AWS did not accept this access key.", Fields: []string{"credential"}}
-	errAccountDenied       = &domain.Error{Code: "invalid_input", Message: "AWS refused to list users under this workspace's path with this access key. Attach the admin policy from docs/backups.md#managed-keys to its user.", Fields: []string{"credential"}}
-	errAccountNotAdmin     = &domain.Error{Code: "invalid_input", Message: "The access key must belong to an IAM user in a commercial AWS region, outside the /astilba/ path: not the root user or a role.", Fields: []string{"credential"}}
-	errAccountBoundary     = &domain.Error{Code: "invalid_input", Message: "The permissions boundary must be a customer-managed policy in the same AWS account.", Fields: []string{"boundary"}}
-	errAccountOther        = &domain.Error{Code: "invalid_input", Message: "This access key belongs to another AWS account. A storage account's credential can only be replaced with one of the same account.", Fields: []string{"credential"}}
-	errAccountTaken        = &domain.Error{Code: "conflict", Message: "This workspace already has a storage account for this AWS account.", Fields: []string{"credential"}}
-	errFoundPeer           = &domain.Error{Code: "conflict", Message: "This user belongs to a peer installation, which may still use its key. Revoke it from that installation."}
-	errPeerLimit           = &domain.Error{Code: "conflict", Message: "A storage account lists at most 16 peer installations."}
-	errFoundUnbounded      = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
+	errAccountCredential    = &domain.Error{Code: "invalid_input", Message: "AWS did not accept this access key.", Fields: []string{"credential"}}
+	errAccountDenied        = &domain.Error{Code: "invalid_input", Message: "AWS refused to list users under this workspace's path with this access key. Attach the admin policy from docs/backups.md#managed-keys to its user.", Fields: []string{"credential"}}
+	errAccountNotAdmin      = &domain.Error{Code: "invalid_input", Message: "The access key must belong to an IAM user in a commercial AWS region, outside the /astilba/ path: not the root user or a role.", Fields: []string{"credential"}}
+	errAccountBoundary      = &domain.Error{Code: "invalid_input", Message: "The permissions boundary must be a customer-managed policy in the same AWS account.", Fields: []string{"boundary"}}
+	errAccountOther         = &domain.Error{Code: "invalid_input", Message: "This access key belongs to another AWS account. A storage account's credential can only be replaced with one of the same account.", Fields: []string{"credential"}}
+	errAccountTaken         = &domain.Error{Code: "conflict", Message: "This workspace already has a storage account for this AWS account.", Fields: []string{"credential"}}
+	errFoundPeer            = &domain.Error{Code: "conflict", Message: "This user belongs to a peer installation, which may still use its key. Revoke it from that installation."}
+	errPeerLimit            = &domain.Error{Code: "conflict", Message: "A storage account lists at most 16 peer installations."}
+	errFoundUnbounded       = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
 	errAcknowledgeUnbounded = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so it isn't confined to backups, whoever made it. Delete it in the AWS console."}
 	errAcknowledgeNotPeer   = &domain.Error{Code: "conflict", Message: "Only a peer installation's user can be acknowledged. Add its installation as a peer if this workspace was transferred to or from it, or revoke the user."}
 	errFoundChanged         = &domain.Error{Code: "conflict", Message: "The latest check found this user with another IAM user ID or other access keys than you reviewed. Review it again."}
-	errProviderUnavailable = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
+	errProviderUnavailable  = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
 
 // providerError is the owner's error for an AWS failure while checking or minting.

@@ -72,9 +72,9 @@ func (a *AWS) ReportMissingUsers(report bool) {
 type user struct {
 	// id is the user's IAM user ID: a user made again under the same name gets another.
 	id, name, path, boundary, account string
-	tags                          map[string]string
-	policies                      map[string]string
-	created                       time.Time
+	tags                              map[string]string
+	policies                          map[string]string
+	created                           time.Time
 }
 
 type key struct {
