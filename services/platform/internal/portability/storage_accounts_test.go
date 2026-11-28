@@ -127,7 +127,8 @@ func TestImportsRefuseInstallsAndGenerationsTheSweepCantRead(t *testing.T) {
 		nil,
 		map[string]any{"policy": uuid.New(), "generation": 3},
 		[]any{map[string]any{"policy": "x", "generation": 3}},
-		// The parser reads both of these, but PostgreSQL refuses to cast them.
+		// The parser reads all three. PostgreSQL refuses to cast the first two, and the
+		// install queue's text match never finds the uppercase one.
 		[]any{map[string]any{"policy": "urn:uuid:" + uuid.NewString(), "generation": 3}},
 		[]any{map[string]any{"policy": "x" + uuid.NewString() + "y", "generation": 3}},
 		[]any{map[string]any{"policy": strings.ToUpper(uuid.NewString()), "generation": 3}},

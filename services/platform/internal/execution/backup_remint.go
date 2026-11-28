@@ -92,9 +92,10 @@ func keyNeed(k db.BackupDestinationKeyStateRow) error {
 	return errNoRemint
 }
 
-// remintFailed records why the destination still has no new key. A revocation that landed during
-// the attempt cleared the destination's failures and latched the key being minted, and no key is
-// made for the server until it is renewed, so the failure is cleared rather than recorded.
+// remintFailed records why the destination still has no new key. While its server is revoked, no
+// key is made for it until it is renewed, and the revocation cleared the destination's failures,
+// so the failure is cleared rather than recorded. One revoked and renewed during the attempt is
+// recorded as failed, and its next attempt makes the renewed server's key.
 func (s *Service) remintFailed(ctx context.Context, ws, destination uuid.UUID, cause error) error {
 	work := context.WithoutCancel(ctx)
 	return s.Store.WorkspaceWriteTransaction(work, ws, func(tx pgx.Tx) error {
