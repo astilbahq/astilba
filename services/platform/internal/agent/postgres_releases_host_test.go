@@ -467,13 +467,21 @@ RESET ROLE;`); err != nil {
 	// PLAT-601. A SQL_ASCII database holds names as their bytes, here "café" and "lot\xe9" in
 	// LATIN1's, which aren't UTF-8: an index the advice matches, and an exclusion constraint's
 	// index. The names are made in the database, since a command's arguments can't carry them.
-	// The index is rebuilt from its oid, the exclusion index named with its byte escaped, and
-	// the other databases rebuilt too.
-	query(`CREATE DATABASE ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`)
+	// The index is rebuilt from its oid, and the exclusion index named with its byte escaped. A
+	// MULE_INTERNAL database, which has no conversion to UTF-8, is rebuilt, its exclusion index
+	// named without one.
+	query(`CREATE DATABASE ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE mule TEMPLATE template0 ENCODING 'MULE_INTERNAL' LC_COLLATE 'C' LC_CTYPE 'C'`)
 	ascii := a
 	asciiDatabase := *a.Postgres
 	asciiDatabase.Database = "ascii"
 	ascii.Postgres = &asciiDatabase
+	mule := a
+	muleDatabase := *a.Postgres
+	muleDatabase.Database = "mule"
+	mule.Postgres = &muleDatabase
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, mule, fixture); err != nil {
+		t.Fatal(err)
+	}
 	for _, statement := range []string{fixture, `DO $$ BEGIN
 EXECUTE format('CREATE INDEX %I ON records(code)', 'caf' || chr(233));
 EXECUTE format('ALTER TABLE records ADD COLUMN lot bpchar, ADD CONSTRAINT %I EXCLUDE USING btree (lot WITH =)', 'lot' || chr(233));
@@ -492,6 +500,7 @@ END $$`} {
 	}
 	cafeIndex := `'caf' || chr(233)`
 	asciiFile, asciiPlain := file(ascii, cafeIndex), file(ascii, "'plain'")
+	muleFile := file(mule, "'unbounded'")
 	// PLAT-575. An index renamed after its database's indexes are listed, with another made under
 	// its name, is still the one rebuilt, since the session that rebuilds it names it from its oid.
 	var staleFile string
@@ -501,7 +510,6 @@ END $$`} {
 			query(`ALTER INDEX unbounded RENAME TO unbounded_stale`, `CREATE INDEX unbounded ON records(code)`)
 		}
 	}
-	served = files(updated, a)
 	if err = e.Journal.forgetPostgresData(volume); err != nil {
 		t.Fatal(err)
 	}
@@ -516,8 +524,8 @@ END $$`} {
 	if file(a, "'unbounded_stale'") == staleFile {
 		t.Error("an index renamed during the step, with another made under its name, was not rebuilt")
 	}
-	if files(updated, a)["tagged"] == served["tagged"] {
-		t.Error("a SQL_ASCII database kept the other databases from being rebuilt")
+	if file(mule, "'unbounded'") == muleFile {
+		t.Error("an index in a MULE_INTERNAL database was not rebuilt")
 	}
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
@@ -549,7 +557,35 @@ END $$`, `CREATE EVENT TRIGGER swap ON ddl_command_start WHEN TAG IN ('REINDEX')
 	if record, _, _ := e.Journal.postgresData(volume); record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
 	}
-	query(`DROP DATABASE ascii`)
+	// An index that turns invalid after the listing isn't made valid. Here it is left as an
+	// interrupted REINDEX CONCURRENTLY of the owner's leaves it, after the swap: the listed oid,
+	// renamed nested_ccold and invalid, beside a new nested. The step is left unfinished, its
+	// cleanup drops the leftover, and the next step finishes.
+	var deadFile string
+	e.Point = func(point string) {
+		if point == "postgres-reindex-indexes app" && deadFile == "" {
+			query(`ALTER INDEX nested RENAME TO nested_ccold`, `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'nested_ccold'::regclass`, `CREATE INDEX nested ON records(nested)`)
+			deadFile = file(a, "'nested_ccold'")
+		}
+	}
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if err != nil || deadFile == "" || !strings.Contains(note, "did not finish for Database") {
+		t.Fatalf("an index that turned invalid during the step was not reported: %q, %v", note, err)
+	}
+	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT count(*) FROM pg_class WHERE relname = 'nested_ccold'"); err != nil || strings.TrimSpace(string(raw)) != "0" {
+		t.Fatalf("an index that turned invalid during the step was rebuilt, not dropped: %q, %v", raw, err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "did not finish") {
+		t.Fatalf("the step after an index turned invalid: %q, %v", note, err)
+	}
+	if record, _, _ := e.Journal.postgresData(volume); record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	query(`DROP DATABASE ascii`, `DROP DATABASE mule`)
 	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
 		t.Fatalf("a database owner's function ran as superuser: %q, %v", raw, err)
 	}

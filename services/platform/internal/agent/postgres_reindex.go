@@ -112,6 +112,9 @@ type listedRow struct {
 	value []byte
 }
 
+// listedIndex is an index a rebuild listed: its oid and the query that selected it.
+type listedIndex struct{ oid, query string }
+
 // listedDatabase is a database a rebuild found by its oid: whether it can be rebuilt (invalid after
 // a DROP DATABASE interrupted part-way, closed, or open), its name, its name as PostgreSQL quotes
 // an identifier, for notes, so a name with commas or parentheses can't read as several databases
@@ -172,6 +175,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 				}
 				oid, encoded, _ := strings.Cut(line, " ")
 				value, err := hex.DecodeString(encoded)
+				// An oid goes into later sessions' SQL as text, so only a number is taken.
 				if _, parseErr := strconv.ParseUint(oid, 10, 32); err != nil || parseErr != nil {
 					return nil, errors.New("a listing returned an unreadable row")
 				}
@@ -184,34 +188,40 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			}
 		}
 	}
-	// oids lists the oids of the indexes a query selects.
-	oids := func(database reindexDatabase, query string) ([]string, error) {
+	// indexes lists the indexes a query selects.
+	indexes := func(database reindexDatabase, query string) ([]listedIndex, error) {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
 		rows, err := list(database, "SELECT i.oid, ''::bytea FROM ("+query+") AS i(oid)")
-		var out []string
+		var out []listedIndex
 		for _, row := range rows {
-			out = append(out, row.oid)
+			out = append(out, listedIndex{oid: row.oid, query: query})
 		}
 		return out, err
 	}
 	// index runs verb on the index with the oid in a session of its own, since neither REINDEX INDEX
 	// CONCURRENTLY nor DROP INDEX CONCURRENTLY runs in a transaction. psql's \gexec runs the
-	// statement the session builds from the oid as it starts, so the index's name never leaves the
-	// database: one renamed since the listing is still the one rebuilt, and a name that isn't UTF-8
-	// needn't pass through a command's arguments. psql runs \gexec only from a script, which goes in
-	// on standard input. Either statement leaves no relation with the oid, a rebuilt index taking a
-	// new one, so one still there means the index was renamed, and another made under its name, in
-	// the instant before its statement ran: the session fails, and the step is left unfinished.
-	index := func(database reindexDatabase, verb, oid string) error {
+	// statement the session builds from the oid as it starts, so the index's name never passes
+	// through the agent or a command's arguments: one renamed since the listing is still the one
+	// rebuilt, and a name that isn't UTF-8 reaches the statement as its bytes. psql runs \gexec only
+	// from a script, which goes in on standard input. The statement is built only while query, the
+	// listing's own, still selects the index, so one that has since become invalid, such as the
+	// _ccold an interrupted REINDEX of the owner's own leaves under the oid, isn't made valid.
+	// Either statement leaves no relation with the oid, a rebuilt index taking a new one, so one
+	// still there means the index no longer qualified, or was renamed and another made under its
+	// name in the instant before its statement ran: the session fails, and the step is left
+	// unfinished, for the next one to drop or rebuild what it finds then. The query, one of the
+	// domain's constants, passes through psql's script parser, so it is one statement and holds no
+	// backslash.
+	index := func(database reindexDatabase, verb, query, oid string) error {
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
-		script := "SELECT format('" + verb + " %s', c.oid::regclass) FROM pg_class c WHERE c.oid = " + oid + "::oid \\gexec\n" +
+		script := "SELECT format('" + verb + " %s', q.oid::regclass) FROM (" + query + ") AS q(oid) WHERE q.oid = " + oid + "::oid \\gexec\n" +
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
 			"SELECT '' WHERE 1 / (SELECT 1 - count(*)::int FROM pg_class WHERE oid = " + oid + "::oid) = 1;\n\\q\n"
 		return e.containerExecInput(ctx, helper, strings.NewReader(script), io.Discard, psql("-XAq", database, "-f", "-")...)
 	}
-	run := func(database reindexDatabase, verb string, indexes []string) error {
-		for _, oid := range indexes {
-			if err := index(database, verb, oid); err != nil {
+	run := func(database reindexDatabase, verb string, indexes []listedIndex) error {
+		for _, listed := range indexes {
+			if err := index(database, verb, listed.query, listed.oid); err != nil {
 				return err
 			}
 		}
@@ -226,10 +236,6 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 	// the server sends text unconverted, so textsend gives those bytes whatever this database's
 	// encoding, and the note escapes what isn't UTF-8.
 	current := func(oid string) (now listedDatabase, found bool, err error) {
-		// The oid goes into each session's SQL as text, so only a number is taken.
-		if _, err = strconv.ParseUint(oid, 10, 32); err != nil {
-			return now, false, errors.New("the listing returned something other than a database oid")
-		}
 		out := &boundedOutput{limit: 1 << 12, stopOnLimit: true}
 		// inline-sql: runs in a managed customer database through psql, not in the platform database
 		if err = e.containerExec(ctx, helper, out, psql("-XAtq", own, "-c", "SELECT CASE WHEN datconnlimit = -2 THEN 'invalid' WHEN datallowconn THEN 'open' ELSE 'closed' END || ' ' || encode(textsend(datname::text), 'hex') || ' ' || encode(textsend(quote_ident(datname)), 'hex') || ' ' || oid::text || ':' || xmin::text FROM pg_database WHERE oid = "+oid+"::oid")...); err != nil {
@@ -249,25 +255,26 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		}
 		return listedDatabase{state: read[0], name: string(name), quoted: string(quoted), key: read[3]}, true, nil
 	}
-	// rebuild returns the exclusion-constraint indexes it skipped, named as PostgreSQL quotes them,
-	// in UTF-8 but in a SQL_ASCII database, which has no conversion, where they are its bytes.
+	// rebuild returns the exclusion-constraint indexes it skipped, named as PostgreSQL quotes them
+	// in the bytes the database holds: no conversion to UTF-8 exists from every encoding, nor for
+	// every character, so the note escapes what isn't UTF-8, as it does databases' names.
 	rebuild := func(database reindexDatabase, name string) ([]string, error) {
-		leftovers, err := oids(database, domain.ReindexLeftovers)
+		leftovers, err := indexes(database, domain.ReindexLeftovers)
 		if err != nil {
 			return nil, err
 		}
 		// An index two queries select is rebuilt once.
-		var due []string
+		var due []listedIndex
 		listed := map[string]bool{}
 		for _, query := range queries {
-			indexes, err := oids(database, query)
+			selected, err := indexes(database, query)
 			if err != nil {
 				return nil, err
 			}
-			for _, oid := range indexes {
-				if !listed[oid] {
-					listed[oid] = true
-					due = append(due, oid)
+			for _, index := range selected {
+				if !listed[index.oid] {
+					listed[index.oid] = true
+					due = append(due, index)
 				}
 			}
 		}
@@ -278,7 +285,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		if err != nil {
 			// Best effort: a drop that fails as well, or a stopping agent, leaves it to the next run.
 			if ctx.Err() == nil {
-				if dropped, listErr := oids(database, domain.ReindexLeftovers); listErr == nil {
+				if dropped, listErr := indexes(database, domain.ReindexLeftovers); listErr == nil {
 					_ = run(database, drop, dropped)
 				}
 			}
@@ -287,7 +294,7 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		var skipped []string
 		for _, query := range queries {
 			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			rows, err := list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, CASE getdatabaseencoding() WHEN 'SQL_ASCII' THEN 'SQL_ASCII' ELSE 'UTF8' END::name) FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
+			rows, err := list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, 'SQL_ASCII') FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
 			if err != nil {
 				return nil, err
 			}
