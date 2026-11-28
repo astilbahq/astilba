@@ -118,22 +118,26 @@ func checkRecoveryResult(row Row) error {
 // workspace's installs in one statement, so one malformed list would stop it everywhere.
 func checkKeyInstalls(raw jsontext.Value) error {
 	var installs []struct {
-		Policy     uuid.UUID `json:"policy"`
-		Generation int64     `json:"generation"`
+		Policy     string `json:"policy"`
+		Generation int64  `json:"generation"`
 	}
 	if json.Unmarshal(raw, &installs, json.RejectUnknownMembers(true)) != nil || installs == nil {
 		return ErrArchive
 	}
 	for _, i := range installs {
-		if i.Policy == uuid.Nil || i.Generation < 1 || i.Generation > MaxCounter {
+		// The parser also takes forms PostgreSQL refuses to cast, such as urn:uuid: or any
+		// wrapping brackets, so only the form activation writes is read.
+		policy, err := uuid.Parse(i.Policy)
+		if err != nil || policy == uuid.Nil || policy.String() != i.Policy || i.Generation < 1 || i.Generation > MaxCounter {
 			return ErrArchive
 		}
 	}
 	return nil
 }
 
-// checkPolicyStatus refuses a backup policy status whose generation isn't a counter, since the key
-// sweep and installs compare every workspace's reported generations in one statement.
+// checkPolicyStatus refuses a backup policy status whose generation isn't a bigint below the counter
+// limit, since the key sweep and installs cast every workspace's reported generations in one
+// statement. An agent may report any generation, so a negative one is kept.
 func checkPolicyStatus(raw jsontext.Value) error {
 	var status struct {
 		Generation *jsontext.Value `json:"generation"`
@@ -145,7 +149,7 @@ func checkPolicyStatus(raw jsontext.Value) error {
 		return ErrArchive
 	}
 	var generation *int64
-	if status.Generation != nil && (json.Unmarshal(*status.Generation, &generation) != nil || generation != nil && (*generation < 0 || *generation > MaxCounter)) {
+	if status.Generation != nil && (json.Unmarshal(*status.Generation, &generation) != nil || generation != nil && *generation > MaxCounter) {
 		return ErrArchive
 	}
 	return nil

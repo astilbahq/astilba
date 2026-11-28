@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,5 +325,45 @@ func TestRevokingAServerClearsItsRotationFailure(t *testing.T) {
 	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
 	if view := k.destinations()[d.Id]; view.RemintError != nil {
 		t.Fatalf("after the server's revocation, the destination shows %q", *view.RemintError)
+	}
+}
+
+func TestARevocationDuringARotationLeavesNoFailure(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	// The rotation's mint waits at AWS until the server has been revoked.
+	minting, revoked := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	k.aws.Before(func(action string) {
+		if action == "CreateAccessKey" {
+			once.Do(func() {
+				close(minting)
+				select {
+				case <-revoked:
+				case <-time.After(30 * time.Second):
+				}
+			})
+		}
+	})
+	t.Cleanup(func() { k.aws.Before(nil) })
+	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/rotate", nil, 204, nil)
+	k.run(t, keySweep{})
+	select {
+	case <-minting:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the rotation never minted a key")
+	}
+	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
+	close(revoked)
+	waitFor(t, "the rotation's job didn't finish", 30*time.Second, func() bool {
+		var running bool
+		if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_backup_remint_v1' AND state <> 'completed')`).Scan(&running); err != nil {
+			t.Fatal(err)
+		}
+		return !running
+	})
+	if view := k.destinations()[d.Id]; view.RemintError != nil {
+		t.Fatalf("after a revocation during its rotation, the destination shows %q", *view.RemintError)
 	}
 }

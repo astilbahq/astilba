@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cx } from "../../../styled-system/css";
@@ -15,6 +15,8 @@ import * as st from "./backup-storage.styles";
 import { ConfirmAction } from "./confirm-action";
 
 type Key = Schema["BackupStorageKey"];
+
+const retryPolling = 2 * 60 * 1000;
 
 /**
  * A managed destination's minted keys and their states, newest first. Its owners can rotate its
@@ -37,6 +39,13 @@ export function ManagedDestination({
   const queries = useQueryClient();
   const retry = useAction();
   const [retried, setRetried] = useState(false);
+  // A retried re-mint starts at the key sweep's next pass, within a minute, and shows nothing
+  // until its key is minting, so the destinations are polled for a while after the retry.
+  const [pollUntil, setPollUntil] = useState(0);
+  useQuery({
+    ...backupDestinationsOptions(workspaceId),
+    refetchInterval: () => (Date.now() < pollUntil ? 5000 : false),
+  });
   const id = useId();
   const serverName = (serverId: string | null) =>
     servers?.find((v) => v.id === serverId)?.name ??
@@ -190,6 +199,7 @@ export function ManagedDestination({
                   }),
                 );
                 setRetried(true);
+                setPollUntil(Date.now() + retryPolling);
                 await refresh();
               })
             }

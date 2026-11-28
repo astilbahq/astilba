@@ -127,6 +127,10 @@ func TestImportsRefuseInstallsAndGenerationsTheSweepCantRead(t *testing.T) {
 		nil,
 		map[string]any{"policy": uuid.New(), "generation": 3},
 		[]any{map[string]any{"policy": "x", "generation": 3}},
+		// The parser reads both of these, but PostgreSQL refuses to cast them.
+		[]any{map[string]any{"policy": "urn:uuid:" + uuid.NewString(), "generation": 3}},
+		[]any{map[string]any{"policy": "x" + uuid.NewString() + "y", "generation": 3}},
+		[]any{map[string]any{"policy": strings.ToUpper(uuid.NewString()), "generation": 3}},
 		[]any{map[string]any{"policy": uuid.New(), "generation": 1.5}},
 		[]any{map[string]any{"policy": uuid.New(), "generation": "3"}},
 		[]any{map[string]any{"policy": uuid.New()}},
@@ -138,10 +142,15 @@ func TestImportsRefuseInstallsAndGenerationsTheSweepCantRead(t *testing.T) {
 		}
 	}
 	setValue(key, "installs", installs)
-	for _, bad := range []any{"x", 1.5, -1} {
+	for _, bad := range []any{"x", 1.5, MaxCounter + 1} {
 		setValue(policy, "status", map[string]any{"generation": bad})
 		if decodes() {
 			t.Errorf("a reported generation of %v was accepted", bad)
 		}
+	}
+	// An agent can report a negative generation, so an export can hold one.
+	setValue(policy, "status", map[string]any{"generation": -1})
+	if !decodes() {
+		t.Error("a negative reported generation was refused")
 	}
 }
