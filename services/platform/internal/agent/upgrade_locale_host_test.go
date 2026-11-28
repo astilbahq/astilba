@@ -56,9 +56,22 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 		recreate(database.name, "")
 	}
 	// A superuser's ALTER SYSTEM is refused before the server reloads it, since the isolated
-	// source, a fresh start, would read it only once the writers have stopped (PLAT-615).
-	for _, statement := range []struct{ sql, want string }{{"ALTER SYSTEM SET lc_monetary = 'C'", refusal + "the server's settings (lc_monetary)"}, {"ALTER SYSTEM RESET lc_monetary", ""}} {
-		if _, err = e.pgQuery(ctx, pgClient{container: source}, a, statement.sql); err != nil {
+	// source, a fresh start, would read it only once the writers have stopped (PLAT-615). So is a
+	// text search configuration outside pg_catalog, which the preflight's sessions can't find and
+	// pg_file_settings so reads as not applicable, but a fresh start takes.
+	public := pgClient{container: source, env: []string{"PGOPTIONS=-c search_path=public,pg_catalog"}}
+	for _, statement := range []struct {
+		sql, want string
+		as        pgClient
+	}{
+		{"ALTER SYSTEM SET lc_monetary = 'C'", refusal + "the server's settings (lc_monetary)", pgClient{container: source}},
+		{"ALTER SYSTEM RESET lc_monetary", "", pgClient{container: source}},
+		{"CREATE TEXT SEARCH CONFIGURATION public.searched (COPY = pg_catalog.english)", "", public},
+		{"ALTER SYSTEM SET default_text_search_config = 'searched'", refusal + "the server's settings (default_text_search_config)", public},
+		{"ALTER SYSTEM RESET default_text_search_config", "", public},
+		{"DROP TEXT SEARCH CONFIGURATION public.searched", "", public},
+	} {
+		if _, err = e.pgQuery(ctx, statement.as, a, statement.sql); err != nil {
 			t.Fatalf("%s: %v", statement.sql, err)
 		}
 		if err = e.upgradeDatabaseChecks(ctx, helper, a, target); statement.want == "" && err != nil || statement.want != "" && (err == nil || err.Error() != statement.want) {
