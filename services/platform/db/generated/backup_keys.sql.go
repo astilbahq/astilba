@@ -63,6 +63,34 @@ func (q *Queries) AccountBackupStorageKeys(ctx context.Context, arg AccountBacku
 	return items, nil
 }
 
+const acknowledgeBackupStorageUser = `-- name: AcknowledgeBackupStorageUser :exec
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
+VALUES($1,$2,$3,$4,$5,$6,$7::text[])
+`
+
+type AcknowledgeBackupStorageUserParams struct {
+	WorkspaceID  uuid.UUID `json:"workspace_id"`
+	ID           uuid.UUID `json:"id"`
+	AccountID    uuid.UUID `json:"account_id"`
+	Identity     uuid.UUID `json:"identity"`
+	UserName     string    `json:"user_name"`
+	IamUserID    string    `json:"iam_user_id"`
+	AccessKeyIds []string  `json:"access_key_ids"`
+}
+
+func (q *Queries) AcknowledgeBackupStorageUser(ctx context.Context, arg AcknowledgeBackupStorageUserParams) error {
+	_, err := q.db.Exec(ctx, acknowledgeBackupStorageUser,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.AccountID,
+		arg.Identity,
+		arg.UserName,
+		arg.IamUserID,
+		arg.AccessKeyIds,
+	)
+	return err
+}
+
 const activateBackupStorageKey = `-- name: ActivateBackupStorageKey :execrows
 UPDATE backup_storage_keys k SET state='active',activated_at=clock_timestamp(),access_key_id = $1,encrypted_secret = $2,installs = $3,recovery_id = $4
 FROM servers s
@@ -529,6 +557,45 @@ func (q *Queries) DestinationServerKeys(ctx context.Context) ([]DestinationServe
 	return items, nil
 }
 
+const foundBackupStorageAcknowledgements = `-- name: FoundBackupStorageAcknowledgements :many
+SELECT a.id AS account_id, (u.value->>'id')::uuid AS identity, max(k.acknowledged_at)::timestamptz AS acknowledged_at
+FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+    AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
+WHERE a.workspace_id = $1
+GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000
+`
+
+type FoundBackupStorageAcknowledgementsRow struct {
+	AccountID      uuid.UUID `json:"account_id"`
+	Identity       uuid.UUID `json:"identity"`
+	AcknowledgedAt time.Time `json:"acknowledged_at"`
+}
+
+// When the newest acknowledgement covering each user the accounts' latest checks found was made,
+// by the same rule as UnacknowledgedPeerBackupStorageUsers. Users not covered aren't listed. An
+// account's check reports at most 1000 users, and a workspace has at most 10 accounts.
+func (q *Queries) FoundBackupStorageAcknowledgements(ctx context.Context, workspaceID uuid.UUID) ([]FoundBackupStorageAcknowledgementsRow, error) {
+	rows, err := q.db.Query(ctx, foundBackupStorageAcknowledgements, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FoundBackupStorageAcknowledgementsRow{}
+	for rows.Next() {
+		var i FoundBackupStorageAcknowledgementsRow
+		if err := rows.Scan(&i.AccountID, &i.Identity, &i.AcknowledgedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const handOverServerBackupStorageKeys = `-- name: HandOverServerBackupStorageKeys :many
 UPDATE backup_storage_keys k SET handed_over=s.revocations
 FROM servers s
@@ -627,7 +694,7 @@ func (q *Queries) InsertBackupStorageKey(ctx context.Context, arg InsertBackupSt
 	return err
 }
 
-const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :exec
+const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :execrows
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES($1,$2,$3,'found',$4,$5,'revoking')
 ON CONFLICT (user_name) DO NOTHING
@@ -641,16 +708,20 @@ type InsertFoundBackupStorageKeyParams struct {
 	FoundTags   []byte    `json:"found_tags"`
 }
 
-// A user the account check found with no row, latched for the sweep to revoke.
-func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) error {
-	_, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
+// A user the account check found with no row, latched for the sweep to revoke. A name that already
+// has a row inserts nothing.
+func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
 		arg.ID,
 		arg.WorkspaceID,
 		arg.AccountID,
 		arg.UserName,
 		arg.FoundTags,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const installOperationState = `-- name: InstallOperationState :one
@@ -1303,6 +1374,41 @@ func (q *Queries) RevokingFoundBackupStorageKeys(ctx context.Context, workspaceI
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unacknowledgedPeerBackupStorageUsers = `-- name: UnacknowledgedPeerBackupStorageUsers :many
+SELECT (u.value->>'id')::uuid AS id FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+WHERE a.workspace_id = $1 AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
+    AND u.value->>'installationId' = ANY(a.peers::text[])
+    AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
+            AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
+ORDER BY 1 LIMIT 10000
+`
+
+// The users each account's latest check found with its boundary and tagged with one of its peers,
+// as the account lists them now, that no acknowledgement covers. One covers a user when it has the
+// user's identity and holds every access key the check found on it. Management writes a peer's
+// tag as the UUID's canonical text, so a tag in any other form isn't a peer's.
+func (q *Queries) UnacknowledgedPeerBackupStorageUsers(ctx context.Context, workspaceID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, unacknowledgedPeerBackupStorageUsers, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

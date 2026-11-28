@@ -4252,7 +4252,9 @@
       operationId: AddBackupStorageAccountPeer
       description: >-
         Lists another installation that shares this account after a workspace transfer, so its users are
-        shown as managed by it without an alert. Needs recent authentication.
+        shown as managed by it. Each with the account's permissions boundary raises a backup_peer_user alert
+        until the owner acknowledges it by name, and once acknowledged is never revoked here. Needs recent
+        authentication.
       parameters:
         - name: workspaceId
           in: path
@@ -4286,7 +4288,9 @@
       operationId: RevokeFoundBackupStorageUser
       description: >-
         Revokes an IAM user the account check found under this workspace's path with no record here. Its
-        access is taken away and the user deleted at AWS. Needs recent authentication.
+        access is taken away and the user deleted at AWS. A peer installation's user can be revoked only
+        while it isn't acknowledged, since that installation may still use its key. Audited as
+        backup.key.revoke, naming the user's new key record. Needs recent authentication.
       parameters:
         - name: workspaceId
           in: path
@@ -4306,6 +4310,50 @@
           schema:
             type: string
             maxLength: 64
+      responses:
+        '204':
+          description: Success
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/workspaces/{workspaceId}/backup-storage-accounts/{accountId}/found-users/{userName}/acknowledge:
+    post:
+      operationId: AcknowledgeFoundBackupStorageUser
+      description: >-
+        Acknowledges an IAM user the account check found tagged with a peer installation as that installation's,
+        which clears the backup_peer_user alert it raised. The acknowledgement covers the user's IAM user ID and
+        the access keys it has now: a user made again under the same name, or given another access key, raises
+        the alert again. Refused if an acknowledgement already covers the user as the latest check found it.
+        Audited as backup.key.acknowledge, naming the acknowledgement's own record. Needs recent
+        authentication.
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: userName
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackupStorageAcknowledgementRequest'
       responses:
         '204':
           description: Success
@@ -10075,19 +10123,55 @@
       properties:
         installationId: {type: string, format: uuid}
       required: [installationId]
+    BackupStorageAcknowledgementRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        The found user as the owner saw it. The acknowledgement is refused if the latest check found it with
+        another IAM user ID or other access keys.
+      properties:
+        userId: {type: string, minLength: 1, maxLength: 128}
+        accessKeyIds:
+          type: array
+          maxItems: 10
+          items: {type: string, maxLength: 128}
+      required: [userId, accessKeyIds]
     BackupStorageFoundUser:
       type: object
       additionalProperties: false
       description: An IAM user under the workspace's path with no record at this installation.
       properties:
+        id:
+          type: string
+          format: uuid
+          description: >-
+            The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert
+            names it as its resource. The nil UUID until a check records it: for a user management is
+            revoking, which the check no longer reports since its record makes it known, or in a report
+            from before identities were recorded.
         userName: {type: string, maxLength: 64}
+        userId: {type: string, maxLength: 128, description: "Its IAM user ID, which a user made again under the same name doesn't keep. Empty for a user being revoked that the latest check didn't report."}
+        accessKeyIds:
+          type: array
+          maxItems: 10
+          description: >-
+            The access keys the check found on it, if it has the account's permissions boundary. Empty for a user
+            without it, or one being revoked that the latest check didn't report.
+          items: {type: string, maxLength: 128}
+        acknowledgedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When the owner acknowledged a peer installation's user as that installation's, if the acknowledgement
+            still covers it: the same IAM user, with no access key it didn't have then.
         installationId: {type: string, maxLength: 128, description: "Its astilba:installation tag, as found."}
         serverId: {type: string, maxLength: 128, description: "Its astilba:server tag, as found."}
         bounded: {type: boolean, description: "Whether it has the account's permissions boundary."}
         peer: {type: boolean, description: "Whether its installation is one of the account's peers."}
         revoking: {type: boolean, description: "Whether management is revoking it."}
         lastError: {type: string, maxLength: 80, nullable: true, description: "While it is being revoked, why the last attempt failed."}
-      required: [userName, installationId, serverId, bounded, peer, revoking, lastError]
+      required: [id, userName, userId, accessKeyIds, installationId, serverId, bounded, peer, acknowledgedAt, revoking, lastError]
     BackupStorageAccount:
       type: object
       additionalProperties: false
@@ -11209,7 +11293,7 @@
       required: [id, kind, resourceId, state, reason, openedAt, deliveries]
       properties:
         id: {type: string, format: uuid}
-        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure, backup_account]}
+        kind: {type: string, enum: [server_offline, disk_docker, disk_agent, service_runtime, service_health, backup_schedule, deployment_problem, build_problem, backup_problem, network_problem, identity_conflict, recovery_window, dns_withdrawal_held, backup_exposure, backup_account, backup_peer_user]}
         resourceId: {type: string, format: uuid}
         serverId: {type: string, format: uuid}
         environmentId: {type: string, format: uuid}

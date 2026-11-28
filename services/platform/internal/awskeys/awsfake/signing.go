@@ -84,9 +84,7 @@ func (a *AWS) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.count(action)
-		if a.Before != nil {
-			a.Before(action)
-		}
+		a.hook(action)
 		if failed := a.injected(action); failed != "" {
 			a.queryError(w, failed)
 			return
