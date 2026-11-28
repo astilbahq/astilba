@@ -256,10 +256,10 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		return listedDatabase{state: read[0], name: string(name), quoted: string(quoted), key: read[3]}, true, nil
 	}
 	// rebuild returns the exclusion-constraint indexes it skipped, named as PostgreSQL quotes them,
-	// in UTF-8 where they convert to it. No conversion exists from every encoding, nor for every
-	// character, nor for bytes a SQL_ASCII database holds that aren't UTF-8, so where a listing's
-	// names don't all convert, they are listed again as the bytes the database holds, and the note
-	// escapes what isn't UTF-8, as it does databases' names.
+	// each once, in UTF-8 where they all convert to it. No conversion exists from every encoding,
+	// nor for every character, nor for bytes a SQL_ASCII database holds that aren't UTF-8, so
+	// where they don't all convert, they are listed again as the bytes the database holds, and the
+	// note escapes what isn't UTF-8, as it does databases' names.
 	rebuild := func(database reindexDatabase, name string) ([]string, error) {
 		leftovers, err := indexes(database, domain.ReindexLeftovers)
 		if err != nil {
@@ -293,22 +293,24 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 			}
 			return nil, err
 		}
-		var skipped []string
+		var exclusions []string
 		for _, query := range queries {
-			named := func(encoding string) ([]listedRow, error) {
-				// inline-sql: runs in a managed customer database through psql, not in the platform database
-				return list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, '"+encoding+"') FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
-			}
-			rows, err := named("UTF8")
-			if err != nil && ctx.Err() == nil {
-				rows, err = named("SQL_ASCII")
-			}
-			if err != nil {
-				return nil, err
-			}
-			for _, row := range rows {
-				skipped = append(skipped, string(row.value))
-			}
+			exclusions = append(exclusions, domain.ExclusionIndexes(query))
+		}
+		named := func(encoding string) ([]listedRow, error) {
+			// inline-sql: runs in a managed customer database through psql, not in the platform database
+			return list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, '"+encoding+"') FROM ("+strings.Join(exclusions, " UNION ")+") AS i(oid)")
+		}
+		rows, err := named("UTF8")
+		if err != nil && ctx.Err() == nil {
+			rows, err = named("SQL_ASCII")
+		}
+		if err != nil {
+			return nil, err
+		}
+		var skipped []string
+		for _, row := range rows {
+			skipped = append(skipped, string(row.value))
 		}
 		return skipped, nil
 	}
