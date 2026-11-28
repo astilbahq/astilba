@@ -78,7 +78,12 @@ func nativePostgresInitdbRecords(t *testing.T, e *Engine, base deployment.Plan) 
 				_, _ = e.Docker.VolumeRemove(ctx, deployment.VolumeName(volume), client.VolumeRemoveOptions{Force: true})
 			}()
 			i := r.Initdb
-			database := strings.Join([]string{i.Encoding, i.LocaleProvider, i.Collate, i.Ctype, i.Locale, "true"}, "|")
+			// The preflight tells no locale, NULL, from an empty one.
+			locale := i.Locale
+			if locale == "" {
+				locale = "<null>"
+			}
+			database := strings.Join([]string{i.Encoding, i.LocaleProvider, i.Collate, i.Ctype, locale, "true"}, "|")
 			want := "postgres|" + database + "\ntemplate0|" + database + "\ntemplate1|" + database
 			var named []string
 			for _, setting := range i.Settings() {
@@ -88,7 +93,7 @@ func nativePostgresInitdbRecords(t *testing.T, e *Engine, base deployment.Plan) 
 			names := strings.Join(named, ", ")
 			errs[n] = e.runIsolated(ctx, isolatedCluster{name: "astilba-initdb-" + volume.String(), labels: visualLabels(base, volume), release: r, volume: volume, env: env}, func(id string) error {
 				// inline-sql: reads a managed database's catalog, not the platform database.
-				raw, err := e.dataOutput(ctx, pgClient{container: id}, "psql", "-XAqt", "-v", "ON_ERROR_STOP=1", "-U", domain.PostgresSuperuser, "-d", "postgres", "-c", "SELECT datname || '|' || pg_encoding_to_char(encoding) || '|' || datlocprovider::text || '|' || datcollate || '|' || datctype || '|' || coalesce(datlocale, '') || '|' || (daticurules IS NULL) FROM pg_database ORDER BY datname COLLATE \"C\"", "-c", "SELECT name || '=' || setting FROM pg_settings WHERE name IN ("+names+") ORDER BY array_position(ARRAY["+names+"], name)")
+				raw, err := e.dataOutput(ctx, pgClient{container: id}, "psql", "-XAqt", "-v", "ON_ERROR_STOP=1", "-U", domain.PostgresSuperuser, "-d", "postgres", "-c", "SELECT datname || '|' || pg_encoding_to_char(encoding) || '|' || datlocprovider::text || '|' || datcollate || '|' || datctype || '|' || coalesce(datlocale, '<null>') || '|' || (daticurules IS NULL) FROM pg_database ORDER BY datname COLLATE \"C\"", "-c", "SELECT name || '=' || setting FROM pg_settings WHERE name IN ("+names+") ORDER BY array_position(ARRAY["+names+"], name)")
 				if err != nil {
 					return err
 				}

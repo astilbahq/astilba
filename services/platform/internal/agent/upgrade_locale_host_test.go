@@ -55,6 +55,16 @@ func nativeUpgradeLocaleRefusals(t *testing.T, e *Engine, helper pgClient, sourc
 		}
 		recreate(database.name, "")
 	}
+	// A superuser's ALTER SYSTEM is refused before the server reloads it, since the isolated
+	// source, a fresh start, would read it only once the writers have stopped (PLAT-615).
+	for _, statement := range []struct{ sql, want string }{{"ALTER SYSTEM SET lc_monetary = 'C'", refusal + "the server's settings (lc_monetary)"}, {"ALTER SYSTEM RESET lc_monetary", ""}} {
+		if _, err = e.pgQuery(ctx, pgClient{container: source}, a, statement.sql); err != nil {
+			t.Fatalf("%s: %v", statement.sql, err)
+		}
+		if err = e.upgradeDatabaseChecks(ctx, helper, a, target); statement.want == "" && err != nil || statement.want != "" && (err == nil || err.Error() != statement.want) {
+			t.Fatalf("after %s, without a reload: %v", statement.sql, err)
+		}
+	}
 	// Clusters of their own, before the owner model, for what the source must keep: the
 	// application's database made again in another encoding, template0, which can be dropped
 	// once it isn't a template but never made again under oid 4, and the variables a database

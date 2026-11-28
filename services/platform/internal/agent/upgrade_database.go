@@ -134,7 +134,9 @@ var localeKeys = map[string]string{"template0": "template0", "application": "the
 // from another one. The restore's verification refuses the application's database differing, but
 // only after downtime, and the rest it can't see. The checks before it refuse per-database and
 // per-role settings, and no option the agent's sessions set touches these, so a session reads the
-// server's own. The columns are PostgreSQL 17's and 18's, the majors an upgrade starts from or
+// server's own. initdb writes them only to postgresql.conf, so a setting a file other than it would
+// give, as ALTER SYSTEM's postgresql.auto.conf does, counts too, even before the server reloads it:
+// the isolated source, a fresh start, reads it after the writers stop. The columns are PostgreSQL 17's and 18's, the majors an upgrade starts from or
 // reaches. datcollversion is left out: it records the collation library's version, which a new
 // cluster records afresh. The values are the agent's own, quoted all the same.
 func upgradeLocaleSQL(target domain.PostgresInitdb) string {
@@ -158,7 +160,7 @@ FROM pg_catalog.pg_database d
 WHERE d.oid = 4 OR d.datname IN (pg_catalog.current_database(), 'postgres', 'template1')
 UNION ALL SELECT 'settings', pg_catalog.string_agg(t.name, ',' ORDER BY t.n)
 FROM (VALUES ` + strings.Join(settings, ", ") + `) AS t(n, name, setting) LEFT JOIN pg_catalog.pg_settings s ON s.name = t.name
-WHERE s.setting IS DISTINCT FROM t.setting) AS differ
+WHERE s.setting IS DISTINCT FROM t.setting OR EXISTS (SELECT 1 FROM pg_catalog.pg_file_settings f WHERE pg_catalog.lower(f.name) = pg_catalog.lower(t.name) AND f.applied AND f.sourcefile IS DISTINCT FROM pg_catalog.current_setting('config_file'))) AS differ
 WHERE what <> ''
 ORDER BY key COLLATE "C"`
 }

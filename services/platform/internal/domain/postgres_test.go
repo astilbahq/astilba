@@ -56,17 +56,6 @@ func TestPostgresReleaseTableDescribesItsPins(t *testing.T) {
 		if got, ok := PostgresReleaseOf(r.Image); !ok || got.Image != r.Image || PostgresMount(r.Image) != r.Mount {
 			t.Errorf("%s does not resolve to itself", r.Image)
 		}
-		// The upgrade's preflight compares a source with its target's record, so a record left
-		// incomplete would refuse every source or, for a setting, compare with nothing.
-		i := r.Initdb
-		if i.Encoding == "" || i.Collate == "" || i.Ctype == "" || !slices.Contains([]string{"c", "i", "b"}, i.LocaleProvider) || (i.Locale == "") != (i.LocaleProvider == "c") {
-			t.Errorf("%s: its initdb record's encoding and locale are incomplete: %+v", r.Image, i)
-		}
-		for _, setting := range i.Settings() {
-			if setting[1] == "" {
-				t.Errorf("%s: its initdb record has no %s", r.Image, setting[0])
-			}
-		}
 	}
 	for major, image := range map[int]string{17: Postgres17Image, 18: PostgresImage} {
 		current, ok := CurrentPostgres(major)
