@@ -105,6 +105,8 @@ func nativePostgresInPlaceUpdate(t *testing.T, e *Engine, base deployment.Plan, 
 		return created.ID
 	}
 	old := run(retired)
+	// A hook a failed check leaves would otherwise run in the next major's test.
+	t.Cleanup(func() { e.Point = nil })
 	// Indexes the update must rebuild sit beside ones it must leave alone, in the deployment's
 	// database, in one its owner named like a connection string and marked as a template, and in
 	// template1. An exclusion constraint's index cannot be rebuilt concurrently, and a leftover of
@@ -247,14 +249,22 @@ RESET ROLE;`); err != nil {
 	copiedDatabase.Database = "copied"
 	copied.Postgres = &copiedDatabase
 	// PLAT-574. CREATE DATABASE lets a role that may create databases choose the oid, so one
-	// rebuilt early in the step can be dropped and made again under its oid from template1 before
-	// template1's own rebuild. Databases are listed by oid as text, so this one's, chosen from 16384
-	// to 19999, comes before template1's, 1.
+	// rebuilt early in the step can be dropped and made again under its oid from a template before
+	// the template's own rebuild. Databases are listed by oid, so this one's, 19999, comes before
+	// the template's, 29999.
+	stencil := a
+	stencilDatabase := *a.Postgres
+	stencilDatabase.Database = "stencil"
+	stencil.Postgres = &stencilDatabase
+	query(`CREATE DATABASE stencil OID 29999 TEMPLATE template0 IS_TEMPLATE true`)
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, stencil, fixture); err != nil {
+		t.Fatal(err)
+	}
 	recreated := a
 	recreatedDatabase := *a.Postgres
 	recreatedDatabase.Database = "recreated"
 	recreated.Postgres = &recreatedDatabase
-	query(`CREATE DATABASE recreated OID 19999 TEMPLATE template1`)
+	query(`CREATE DATABASE recreated OID 19999 TEMPLATE stencil`)
 	firstFiles := files(updated, recreated)
 	var copiedFiles, movedFiles, recreatedFiles map[string]string
 	moved := false
@@ -267,11 +277,11 @@ RESET ROLE;`); err != nil {
 		case point == "postgres-reindex-read a=b" && !moved:
 			moved = true
 			query(`ALTER DATABASE "a=b" RENAME TO "a=b moved"`, `ALTER DATABASE decoy RENAME TO "a=b"`)
-		case point == "postgres-reindex-read template1" && recreatedFiles == nil:
+		case point == "postgres-reindex-read stencil" && recreatedFiles == nil:
 			if files(updated, recreated)["unbounded"] == firstFiles["unbounded"] {
-				t.Fatal("the database to make again was not rebuilt before template1")
+				t.Fatal("the database to make again was not rebuilt before its template")
 			}
-			query(`DROP DATABASE recreated`, `CREATE DATABASE recreated OID 19999 TEMPLATE template1`)
+			query(`DROP DATABASE recreated`, `CREATE DATABASE recreated OID 19999 TEMPLATE stencil`)
 			recreatedFiles = files(updated, recreated)
 		}
 	}
@@ -281,7 +291,7 @@ RESET ROLE;`); err != nil {
 		t.Fatalf("the retried rebuild: %q, %v, %d steps", note, err, steps)
 	}
 	if got := files(updated, recreated); got["unbounded"] == recreatedFiles["unbounded"] || got["plain"] != recreatedFiles["plain"] {
-		t.Errorf("a database made again under its oid from template1 during the rebuild was not rebuilt: %v, was %v", got, recreatedFiles)
+		t.Errorf("a database made again under its oid from a template during the rebuild was not rebuilt: %v, was %v", got, recreatedFiles)
 	}
 	query(`ALTER DATABASE "a=b" RENAME TO decoy`, `ALTER DATABASE "a=b moved" RENAME TO "a=b"`)
 	if got := files(updated, other); got["unbounded"] == movedFiles["unbounded"] || got["plain"] != movedFiles["plain"] {
@@ -433,11 +443,11 @@ RESET ROLE;`); err != nil {
 	}
 	query(`DROP DATABASE halted`)
 	// A database named early in the step and dropped before its last listing isn't named, so the
-	// record still moves on. Its oid, chosen from 16384 to 19999, is listed before template1's.
+	// record still moves on. Its oid, 19998, is listed before stencil's, 29999.
 	query(`CREATE DATABASE gone OID 19998 TEMPLATE template0`, `ALTER DATABASE gone ALLOW_CONNECTIONS false`)
 	gone := false
 	e.Point = func(point string) {
-		if point == "postgres-reindex-read template1" && !gone {
+		if point == "postgres-reindex-read stencil" && !gone {
 			gone = true
 			query(`DROP DATABASE gone`)
 		}
@@ -453,6 +463,137 @@ RESET ROLE;`); err != nil {
 	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
 	}
+	query(`ALTER DATABASE stencil IS_TEMPLATE false`, `DROP DATABASE stencil`)
+	// PLAT-601. A SQL_ASCII database holds names as their bytes, here "café" and "lot\xe9" in
+	// LATIN1's, which aren't UTF-8: an index the advice matches, and an exclusion constraint's
+	// index. The names are made in the database, since a command's arguments can't carry them.
+	// The index is rebuilt from its oid, and the exclusion index named with its byte escaped. A
+	// MULE_INTERNAL database, which has no conversion to UTF-8, is rebuilt, and listing its
+	// exclusion index doesn't fail the step. A LATIN1 database's exclusion index named "é" is
+	// named in UTF-8.
+	query(`CREATE DATABASE ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE mule TEMPLATE template0 ENCODING 'MULE_INTERNAL' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE "a latin" TEMPLATE template0 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C'`)
+	latin1 := a
+	latin1Database := *a.Postgres
+	latin1Database.Database = "a latin"
+	latin1.Postgres = &latin1Database
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, latin1, `CREATE TABLE spots(c bpchar); DO $$ BEGIN EXECUTE format('ALTER TABLE spots ADD CONSTRAINT %I EXCLUDE USING btree (c WITH =)', chr(233)); END $$`); err != nil {
+		t.Fatal(err)
+	}
+	ascii := a
+	asciiDatabase := *a.Postgres
+	asciiDatabase.Database = "ascii"
+	ascii.Postgres = &asciiDatabase
+	mule := a
+	muleDatabase := *a.Postgres
+	muleDatabase.Database = "mule"
+	mule.Postgres = &muleDatabase
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, mule, fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{fixture, `DO $$ BEGIN
+EXECUTE format('CREATE INDEX %I ON records(code)', 'caf' || chr(233));
+EXECUTE format('ALTER TABLE records ADD COLUMN lot bpchar, ADD CONSTRAINT %I EXCLUDE USING btree (lot WITH =)', 'lot' || chr(233));
+END $$`} {
+		if _, err = e.pgQuery(ctx, pgClient{container: updated}, ascii, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := func(application domain.Application, index string) string {
+		t.Helper()
+		raw, err := e.pgQuery(ctx, pgClient{container: updated}, application, "SELECT relfilenode FROM pg_class WHERE relname = "+index)
+		if err != nil || strings.TrimSpace(string(raw)) == "" {
+			t.Fatalf("index %s: %q, %v", index, raw, err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+	cafeIndex := `'caf' || chr(233)`
+	asciiFile, asciiPlain := file(ascii, cafeIndex), file(ascii, "'plain'")
+	muleFile := file(mule, "'unbounded'")
+	// PLAT-575. An index renamed after its database's indexes are listed, with another made under
+	// its name, is still the one rebuilt, since the session that rebuilds it names it from its oid.
+	var staleFile string
+	e.Point = func(point string) {
+		if point == "postgres-reindex-indexes app" && staleFile == "" {
+			staleFile = file(a, "'unbounded'")
+			query(`ALTER INDEX unbounded RENAME TO unbounded_stale`, `CREATE INDEX unbounded ON records(code)`)
+		}
+	}
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if err != nil || staleFile == "" || !strings.Contains(note, `ascii.public."lot\xe9"`) || !strings.Contains(note, "ascii.public.records_slot_excl") || !strings.Contains(note, `"a latin".public."é"`) || strings.Contains(note, "did not finish") {
+		t.Fatalf("a database with names that aren't UTF-8, or an index renamed during the step: %q, %v", note, err)
+	}
+	if file(ascii, cafeIndex) == asciiFile || file(ascii, "'plain'") != asciiPlain {
+		t.Error("an index whose name isn't UTF-8 in a SQL_ASCII database was not rebuilt")
+	}
+	if file(a, "'unbounded_stale'") == staleFile {
+		t.Error("an index renamed during the step, with another made under its name, was not rebuilt")
+	}
+	if file(mule, "'unbounded'") == muleFile {
+		t.Error("an index in a MULE_INTERNAL database was not rebuilt")
+	}
+	if record, found, _ := e.Journal.postgresData(volume); !found || record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	// An index renamed, with another made under its name, in the instant between its session
+	// naming it and its statement running, here by an event trigger on the statement itself,
+	// isn't rebuilt: its oid survives, so the step is left unfinished, and the next one rebuilds it.
+	query(`CREATE FUNCTION swap() RETURNS event_trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF current_query() LIKE '%.tagged' AND to_regclass('public.tagged_stale') IS NULL THEN
+		ALTER INDEX public.tagged RENAME TO tagged_stale;
+		CREATE INDEX tagged ON public.records(tag);
+	END IF;
+END $$`, `CREATE EVENT TRIGGER swap ON ddl_command_start WHEN TAG IN ('REINDEX') EXECUTE FUNCTION swap()`)
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || !strings.Contains(note, "did not finish for Database") {
+		t.Fatalf("an index whose name moved as its rebuild ran was not reported: %q, %v", note, err)
+	}
+	if record, _, _ := e.Journal.postgresData(volume); record.Image == current.Image {
+		t.Fatal("an index whose name moved as its rebuild ran advanced the record")
+	}
+	query(`DROP EVENT TRIGGER swap`, `DROP FUNCTION swap()`)
+	staleFile = file(a, "'tagged_stale'")
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "did not finish") || file(a, "'tagged_stale'") == staleFile {
+		t.Fatalf("the index left by the unfinished step was not rebuilt: %q, %v", note, err)
+	}
+	if record, _, _ := e.Journal.postgresData(volume); record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	// An index that turns invalid after the listing isn't made valid. Here it is left as an
+	// interrupted REINDEX CONCURRENTLY of the owner's leaves it, after the swap: the listed oid,
+	// renamed nested_ccold and invalid, beside a new nested. The step is left unfinished, its
+	// cleanup drops the leftover, and the next step finishes.
+	var deadFile string
+	e.Point = func(point string) {
+		if point == "postgres-reindex-indexes app" && deadFile == "" {
+			query(`ALTER INDEX nested RENAME TO nested_ccold`, `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'nested_ccold'::regclass`, `CREATE INDEX nested ON records(nested)`)
+			deadFile = file(a, "'nested_ccold'")
+		}
+	}
+	if err = e.Journal.forgetPostgresData(volume); err != nil {
+		t.Fatal(err)
+	}
+	note, err = e.reindexPostgres(ctx, after, begin)
+	e.Point = nil
+	if err != nil || deadFile == "" || !strings.Contains(note, "did not finish for Database") {
+		t.Fatalf("an index that turned invalid during the step was not reported: %q, %v", note, err)
+	}
+	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT count(*) FROM pg_class WHERE relname = 'nested_ccold'"); err != nil || strings.TrimSpace(string(raw)) != "0" {
+		t.Fatalf("an index that turned invalid during the step was rebuilt, not dropped: %q, %v", raw, err)
+	}
+	if note, err = e.reindexPostgres(ctx, after, begin); err != nil || strings.Contains(note, "did not finish") {
+		t.Fatalf("the step after an index turned invalid: %q, %v", note, err)
+	}
+	if record, _, _ := e.Journal.postgresData(volume); record.Image != current.Image {
+		t.Fatalf("the rebuilt storage records %+v", record)
+	}
+	query(`DROP DATABASE ascii`, `DROP DATABASE mule`, `DROP DATABASE "a latin"`)
 	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
 		t.Fatalf("a database owner's function ran as superuser: %q, %v", raw, err)
 	}
