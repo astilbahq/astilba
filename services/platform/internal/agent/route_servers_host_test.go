@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,7 +201,7 @@ func TestNativeUnreachablePoolFailsItsPublish(t *testing.T) {
 // remains, and the proxy, which reaps no process it did not start, runs only itself.
 func (h isolationHost) probesLeftNothing() {
 	h.t.Helper()
-	if _, err := h.f.docker.ContainerInspect(context.Background(), routeProbeName, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+	if _, err := h.f.docker.ContainerInspect(context.Background(), routeProbeName(h.server.String()), client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
 		h.t.Fatalf("a route probe container remains: %v", err)
 	}
 	processes, _, ok, err := h.e.proxyExec(context.Background(), []string{"ps", "-o", "stat,comm"}, 16<<10)
@@ -215,7 +217,8 @@ func (h isolationHost) probesLeftNothing() {
 
 // A probe that follows a redirect to https starts a TLS helper that outlives wget, and a
 // server that holds the handshake keeps it running. Neither may outlive the probe's round,
-// whether the round ends at the probe's bound or because the publish gave up first.
+// whether the round ends at the probe's bound or because the publish gave up first, even
+// while Docker was still creating the probe. No probe left behind holds up a round.
 func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 	h := newIsolationHost(t)
 	u := h.poolUnit("9", "pool")
@@ -237,6 +240,77 @@ func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 		t.Fatalf("the cancelled round gave %v", err)
 	}
 	h.probesLeftNothing()
+	// A probe another server's agent left, as one enrolled on this machine before might,
+	// holds up no round and stays. This server's own is removed.
+	left := func(name string, labels map[string]string) string {
+		t.Helper()
+		created, err := h.f.docker.ContainerCreate(t.Context(), client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: execution.TestImage, Labels: labels}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = h.f.docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
+		})
+		return created.ID
+	}
+	server, other := h.server.String(), uuid.NewString()
+	foreign := left(routeProbeName(other), map[string]string{labelServer: other, labelKind: "route-probe-v1"})
+	stale := left(routeProbeName(server), map[string]string{labelServer: server, labelKind: "route-probe-v1"})
+	// PLAT-618. Docker goes on creating a container after its client gives up, so a round
+	// that ended while Docker created its probe left the probe behind. It never started, so
+	// AutoRemove never took it.
+	ended, end := context.WithCancel(t.Context())
+	defer end()
+	cut := &probeCreateCut{name: routeProbeName(h.server.String()), end: end}
+	agent := h.e.Docker
+	h.dockerThrough(func(base http.RoundTripper) http.RoundTripper {
+		cut.base = base
+		return cut
+	})
+	if _, _, err = h.e.probeRound(ended, []string{probe}); err == nil || !cut.cut.Load() {
+		t.Fatalf("the round that ended while Docker created its probe gave %v", err)
+	}
+	h.e.Docker = agent
+	h.probesLeftNothing()
+	if _, err = h.f.docker.ContainerInspect(t.Context(), stale, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+		t.Fatalf("this server's probe left behind remains: %v", err)
+	}
+	health := "http://" + host + ":8080/health"
+	// A container under this server's probe's name that is not its probe stays, and stops
+	// the round.
+	squatter := left(routeProbeName(server), map[string]string{labelServer: server})
+	if _, _, err = h.e.probeRound(t.Context(), []string{health}); err == nil || !strings.Contains(err.Error(), "ownership conflict") {
+		t.Fatalf("a round under a name another container holds gave %v", err)
+	}
+	for _, id := range []string{foreign, squatter} {
+		if _, err = h.f.docker.ContainerInspect(t.Context(), id, client.ContainerInspectOptions{}); err != nil {
+			t.Fatalf("a container that is not this server's probe was removed: %v", err)
+		}
+	}
+}
+
+// probeCreateCut is a transport to Docker that, once Docker has created the probe name,
+// ends the round's context with end before the answer reaches the agent, as a deadline
+// that passes while Docker creates a probe does. It cuts one create.
+type probeCreateCut struct {
+	base http.RoundTripper
+	name string
+	end  context.CancelFunc
+	cut  atomic.Bool
+}
+
+func (c *probeCreateCut) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/containers/create") || r.URL.Query().Get("name") != c.name || c.cut.Swap(true) {
+		return c.base.RoundTrip(r)
+	}
+	response, err := c.base.RoundTrip(r.WithContext(context.WithoutCancel(r.Context())))
+	c.end()
+	// A transport gives up on a request whose context has ended, whatever Docker did.
+	if err == nil && r.Context().Err() != nil {
+		response.Body.Close()
+		return nil, r.Context().Err()
+	}
+	return response, err
 }
 
 // A round may probe as many servers as an environment can run, and quick probes must not

@@ -44,6 +44,10 @@ type Engine struct {
 	ImageLoadBytes        int64
 	ImageLoadReserveBytes int64
 	TroubleshootingIdle   time.Duration
+	// Stopping is cancelled once the agent is asked to stop, and cleanup that outlasts the
+	// work it follows keeps to a short grace from then; see writerResumeGrace. Nil for an
+	// engine that is never stopped while it works.
+	Stopping context.Context
 	// NetworkPool is the owner's container network pool, checked by ValidateNetworkPool;
 	// DefaultNetworkPool when unset.
 	NetworkPool netip.Prefix
