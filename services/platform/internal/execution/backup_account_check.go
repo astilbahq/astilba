@@ -289,7 +289,7 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			if err != nil {
 				return report, err
 			}
-			if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account.ID, UserName: u.Name, FoundTags: tags}); err != nil {
+			if _, err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: uuid.New(), WorkspaceID: ws, AccountID: account.ID, UserName: u.Name, FoundTags: tags}); err != nil {
 				return report, err
 			}
 			found.Revoking, latched = true, true

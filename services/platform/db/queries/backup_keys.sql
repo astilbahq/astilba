@@ -50,8 +50,9 @@ ORDER BY account_id,user_name LIMIT 1000;
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,destination_id,holder_server_id,purpose,scope,user_name,recovery_request,recovery_policy_id,recovery_snapshot)
 VALUES(@id,@workspace_id,@account_id,@destination_id,@holder_server_id,@purpose,@scope,@user_name,sqlc.narg(recovery_request),sqlc.narg(recovery_policy_id),sqlc.narg(recovery_snapshot));
 
--- name: InsertFoundBackupStorageKey :exec
--- A user the account check found with no row, latched for the sweep to revoke.
+-- name: InsertFoundBackupStorageKey :execrows
+-- A user the account check found with no row, latched for the sweep to revoke. A name that already
+-- has a row inserts nothing.
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES(@id,@workspace_id,@account_id,'found',@user_name,@found_tags,'revoking')
 ON CONFLICT (user_name) DO NOTHING;
@@ -309,7 +310,7 @@ FROM backup_storage_accounts a
 CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
 JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
     AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
-WHERE a.workspace_id = @workspace_id AND u.value->>'id' IS NOT NULL
+WHERE a.workspace_id = @workspace_id
 GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000;
 
 -- name: AcknowledgeBackupStorageUser :exec

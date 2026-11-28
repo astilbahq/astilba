@@ -35,6 +35,7 @@ var (
 	errAcknowledgeUnbounded = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so it isn't confined to backups, whoever made it. Delete it in the AWS console."}
 	errAcknowledgeNotPeer   = &domain.Error{Code: "conflict", Message: "Only a peer installation's user can be acknowledged. Add its installation as a peer if this workspace was transferred to or from it, or revoke the user."}
 	errFoundChanged         = &domain.Error{Code: "conflict", Message: "The latest check found this user with another IAM user ID or other access keys than you reviewed. Review it again."}
+	errFoundKnown           = &domain.Error{Code: "conflict", Message: "Management already has a record of this user, and is revoking it or has revoked it."}
 	errAcknowledged         = &domain.Error{Code: "conflict", Message: "This user is already acknowledged as the latest check found it."}
 	errProviderUnavailable  = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
@@ -310,7 +311,7 @@ func acknowledgements(ctx context.Context, q *db.Queries, ws uuid.UUID) (acknowl
 // a bounded peer's user is acknowledged, as UnacknowledgedPeerBackupStorageUsers reads it.
 func acknowledgement(account uuid.UUID, u api.BackupStorageFoundUser, acks acknowledged) *time.Time {
 	at, ok := acks[[2]uuid.UUID{account, u.Id}]
-	if !u.Peer || !u.Bounded || u.Id == uuid.Nil || !ok {
+	if !u.Peer || !u.Bounded || !ok {
 		return nil
 	}
 	return &at
@@ -450,8 +451,12 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 			}
 		}
 		tags, _ := stablejson.Marshal(map[string]string{"astilba:installation": report.Found[j].InstallationId, "astilba:server": report.Found[j].ServerId})
-		if err = q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: key, WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
+		// A user management already holds a row for, such as one a revocation already latched,
+		// isn't revoked again, so the audit never names a row that doesn't exist.
+		if n, err := q.InsertFoundBackupStorageKey(ctx, db.InsertFoundBackupStorageKeyParams{ID: key, WorkspaceID: ws, AccountID: account, UserName: user, FoundTags: tags}); err != nil {
 			return err
+		} else if n == 0 {
+			return errFoundKnown
 		}
 		// The account shows the user as revoking from its row. A check now finds the user known,
 		// so the alert it raised clears without waiting a day.

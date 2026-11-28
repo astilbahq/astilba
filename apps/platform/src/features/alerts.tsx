@@ -518,7 +518,7 @@ function StorageAccountAlert({
     <p>
       {account && <>Storage account: {account.name}. </>}
       {firing &&
-        "Review what its latest check found, revoke the users management didn't make, and fix a failing check. "}
+        "Review what its latest check found, revoke the users management didn't make, and fix a failing check. If nobody you know made a user, replace the admin key too. "}
       <Link
         to="/members"
         search={{ workspace: workspaceId }}

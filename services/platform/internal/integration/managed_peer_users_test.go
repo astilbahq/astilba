@@ -286,9 +286,15 @@ func TestAnUnacknowledgedPeerUserCanBeRevoked(t *testing.T) {
 	}
 	p.b.call("POST", p.account+"/found-users/"+kept+"/revoke", nil, 409, nil)
 	p.b.call("POST", p.account+"/found-users/"+suspect+"/revoke", nil, 204, nil)
+	// Revoking it again, before a check drops it from the report, is refused and not audited.
+	p.b.call("POST", p.account+"/found-users/"+suspect+"/revoke", nil, 409, nil)
 	var audited int
 	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events e JOIN backup_storage_keys k ON k.workspace_id=e.workspace_id AND k.id=e.resource_id WHERE e.workspace_id=$1 AND e.action='backup.key.revoke' AND k.user_name=$2`, p.ws, suspect).Scan(&audited); err != nil || audited != 1 {
 		t.Fatalf("the revocation was audited %d times by its record: %v", audited, err)
+	}
+	var revokes int
+	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.key.revoke'`, p.ws).Scan(&revokes); err != nil || revokes != 1 {
+		t.Fatalf("revocations were audited %d times: %v", revokes, err)
 	}
 	if !found(t, p.view(t), suspect).Revoking {
 		t.Fatal("the revoked peer user isn't shown as revoking")

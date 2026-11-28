@@ -200,7 +200,8 @@ export function backupStorageHandlers({
   accounts = [account],
   failAccounts = false,
   failDestinations = false,
-  // Revoking a found user is refused: its installation became a peer since the latest check.
+  // Revoking a found user is refused: another owner acknowledged it as a peer's since the page
+  // loaded, which the refreshed list then shows.
   refusePeerRevoke = false,
 } = {}) {
   const accountPath = `${workspaceRoot}/backup-storage-accounts/:accountId`;
@@ -270,12 +271,17 @@ export function backupStorageHandlers({
       return new HttpResponse(null, { status: 204 });
     }),
     http.post(`${accountPath}/found-users/:userName/revoke`, ({ params }) => {
-      if (refusePeerRevoke)
+      if (refusePeerRevoke) {
+        acknowledged.set(String(params.userName), {
+          userId: "",
+          accessKeyIds: [],
+        });
         return workshopFailure(
           "conflict",
           "This user is acknowledged as a peer installation's, which may still use its key. Revoke it from that installation.",
           409,
         );
+      }
       revokedUsers.add(String(params.userName));
       return new HttpResponse(null, { status: 204 });
     }),

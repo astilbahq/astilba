@@ -563,7 +563,7 @@ FROM backup_storage_accounts a
 CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
 JOIN backup_storage_acknowledgements k ON k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
     AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids
-WHERE a.workspace_id = $1 AND u.value->>'id' IS NOT NULL
+WHERE a.workspace_id = $1
 GROUP BY 1,2 ORDER BY 1,2 LIMIT 10000
 `
 
@@ -694,7 +694,7 @@ func (q *Queries) InsertBackupStorageKey(ctx context.Context, arg InsertBackupSt
 	return err
 }
 
-const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :exec
+const insertFoundBackupStorageKey = `-- name: InsertFoundBackupStorageKey :execrows
 INSERT INTO backup_storage_keys(id,workspace_id,account_id,purpose,user_name,found_tags,state)
 VALUES($1,$2,$3,'found',$4,$5,'revoking')
 ON CONFLICT (user_name) DO NOTHING
@@ -708,16 +708,20 @@ type InsertFoundBackupStorageKeyParams struct {
 	FoundTags   []byte    `json:"found_tags"`
 }
 
-// A user the account check found with no row, latched for the sweep to revoke.
-func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) error {
-	_, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
+// A user the account check found with no row, latched for the sweep to revoke. A name that already
+// has a row inserts nothing.
+func (q *Queries) InsertFoundBackupStorageKey(ctx context.Context, arg InsertFoundBackupStorageKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertFoundBackupStorageKey,
 		arg.ID,
 		arg.WorkspaceID,
 		arg.AccountID,
 		arg.UserName,
 		arg.FoundTags,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const installOperationState = `-- name: InstallOperationState :one
