@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -167,5 +168,47 @@ func TestProviderReportsARejectedCredential(t *testing.T) {
 		if (calls == 1) != rejected || calls > 1 {
 			t.Fatalf("HTTP %d reported a rejection %d times", status, calls)
 		}
+	}
+}
+
+// A provider's refusal says whether it was under the provider's rate limits, which pass, and a
+// permanent redirect, as for a renamed repository, is an answer with its status rather than a
+// failed request. A temporary redirect is still not followed or believed.
+func TestProviderTellsRateLimitsAndMovesApart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answer  http.HandlerFunc
+		status  int
+		limited bool
+	}{
+		{name: "forbidden", answer: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }, status: 403},
+		{name: "retry-after", answer: func(w http.ResponseWriter, r *http.Request) { w.Header().Set("Retry-After", "30"); w.WriteHeader(403) }, status: 403, limited: true},
+		{name: "secondary limit", answer: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(403)
+			_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit."}`))
+		}, status: 403, limited: true},
+		{name: "too many requests", answer: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(429) }, status: 429, limited: true},
+		{name: "not found", answer: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }, status: 404},
+		{name: "moved permanently", answer: func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/repositories/1", http.StatusMovedPermanently)
+		}, status: 301},
+		{name: "permanent redirect", answer: func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/repositories/1", http.StatusPermanentRedirect)
+		}, status: 308},
+		{name: "found", answer: func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/repositories/1", http.StatusFound) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := answering(t, "github", tc.answer).Repository(context.Background())
+			var status *ProviderError
+			if tc.status == 0 {
+				if err == nil || errors.As(err, &status) {
+					t.Fatal("a temporary redirect was taken for an answer", err)
+				}
+				return
+			}
+			if !errors.As(err, &status) || status.Status != tc.status || status.Limited != tc.limited {
+				t.Fatalf("got %#v, want HTTP %d limited %v", err, tc.status, tc.limited)
+			}
+		})
 	}
 }

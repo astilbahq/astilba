@@ -94,16 +94,20 @@ func TestManagementProviderDropsARejectedAppToken(t *testing.T) {
 	}
 }
 
-// GitHub limiting the App, or a cached token it stopped accepting, passes, so a submission that
-// meets one is tried again rather than failed as if its credential were unusable.
+// GitHub limiting the App, or a cached token it stopped accepting, passes, as does a provider
+// limiting a stored credential with a 403, so a submission that meets one is tried again rather
+// than failed as if its credential were unusable.
 func TestSubmissionRetriesAPassingGitHubFailure(t *testing.T) {
-	for _, err := range []error{appFailure(&githubapp.RateLimited{Until: time.Now().Add(time.Minute)}), appFailure(fmt.Errorf("%w: %w", githubapp.ErrTokenRejected, &githubapp.APIError{Status: 401}))} {
+	for _, err := range []error{appFailure(&githubapp.RateLimited{Until: time.Now().Add(time.Minute)}), appFailure(fmt.Errorf("%w: %w", githubapp.ErrTokenRejected, &githubapp.APIError{Status: 401})), &pipeline.ProviderError{Status: 403, Limited: true}} {
 		if note, terminal := submissionFailure(err); terminal || !strings.Contains(note, "Try again") {
 			t.Fatalf("a passing GitHub failure ended the submission: %q", note)
 		}
 	}
 	if _, terminal := submissionFailure(domain.Invalid("credential")); !terminal {
 		t.Fatal("an unusable credential was retried")
+	}
+	if _, terminal := submissionFailure(&pipeline.ProviderError{Status: 403}); !terminal {
+		t.Fatal("a provider's refusal was retried")
 	}
 }
 

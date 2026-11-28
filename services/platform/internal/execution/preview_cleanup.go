@@ -293,6 +293,12 @@ func (s *Service) previewCommandAllowed(ctx context.Context, tx pgx.Tx, git *git
 		if err != nil {
 			return false, err
 		}
+		// A provider that refuses the repository for good, or no longer has the request (HTTP
+		// 404), never shows it open again, and failing instead would fail every poll by the
+		// command's host until its deadline.
+		if _, final := finalProviderRefusal(answer.Err); final {
+			return false, nil
+		}
 		if answer.Err != nil {
 			return false, answer.Err
 		}

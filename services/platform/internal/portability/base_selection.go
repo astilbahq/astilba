@@ -22,10 +22,14 @@ import (
 //   - the newest 100 audit events, each carried environment's newest 50 revisions, and each
 //     backup policy's newest 100 restores onto another server, with the restore of each carried
 //     operation;
-//   - every version of each carried secret;
 //   - the build artifacts those configurations use (archivePinnedArtifacts);
 //   - everything those rows name, as an export closes over it, which includes each environment's
-//     runtime head and retirement.
+//     runtime head and retirement;
+//   - of each carried secret, the versions an export keeps (keptSecretVersions), every version a
+//     carried row names (keepNamedSecretVersions) and every erased version. Recovery takes the
+//     base's erasure over a value the restored backup still holds (recoveryErasure), and it accepts
+//     a backup from before the window whose runtimes haven't changed since, so without them
+//     recovering from such a backup would bring a retired value back. An erased row holds no value.
 //
 // Operations that changed a runtime travel as the recovery section's applied history instead
 // (RecoveryHistory), and roots and runtime changes that ended inside the window as its settled
@@ -34,7 +38,7 @@ import (
 // endpoints again from its runtime (projectCrossHostGrants). since is the window's start less the widest margin a recorded time is given (7 days),
 // so the window's edge errs towards carrying a row.
 func baseSelection(ctx context.Context, tx pgx.Tx, ws uuid.UUID, since time.Time) (map[string]string, error) {
-	return selectArchive(ctx, tx, ws, []archiveStep{{baseEnvironments, []any{since}}, {baseSeeds, []any{since}}})
+	return selectArchive(ctx, tx, ws, []archiveStep{{baseEnvironments, []any{since}}, {baseSeeds, []any{since}}}, archiveStep{keptSecretVersions, []any{SecretVersionsKept, true}})
 }
 
 // A preview environment is live while an open request names it or its runtime is applied. One
