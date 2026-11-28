@@ -209,17 +209,31 @@ func (s *Service) listAccount(ctx context.Context, account db.BackupStorageAccou
 	for _, k := range l.keys {
 		known[k.UserName] = true
 	}
+	gone := map[string]bool{}
 	for _, u := range l.users {
 		if known[u.Name] || u.Boundary != account.Boundary {
 			continue
 		}
 		ids, err := s.AWS.AccessKeys(ctx, admin, u.Name)
+		if errors.Is(err, awskeys.ErrNotFound) || errors.Is(err, awskeys.ErrDenied) {
+			// A user deleted since the listing is left out, as the listing leaves out one
+			// deleted while it runs, however IAM answers for it by name.
+			exists, existsErr := s.AWS.UserExists(ctx, admin, awskeys.Path(ws.String()), u.Name)
+			if existsErr != nil {
+				return l, existsErr
+			}
+			if !exists {
+				gone[u.Name] = true
+				continue
+			}
+		}
 		if err != nil {
 			return l, err
 		}
 		slices.Sort(ids)
 		l.found[u.Name] = ids
 	}
+	l.users = slices.DeleteFunc(l.users, func(u awskeys.User) bool { return gone[u.Name] })
 	return l, nil
 }
 
@@ -249,7 +263,6 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 		}
 	}
 	latched := false
-	foundIDs := []uuid.UUID{}
 	for _, u := range l.users {
 		if k, ok := known[u.Name]; ok {
 			// A user recorded revoked over an hour ago that IAM still lists is revoked again.
@@ -263,11 +276,10 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			continue
 		}
 		found := api.BackupStorageFoundUser{Id: foundUserID(account.ID, u.Name, u.ID), UserName: u.Name, UserId: u.ID, AccessKeyIds: []string{}, InstallationId: u.Tags["astilba:installation"], ServerId: u.Tags["astilba:server"], Bounded: u.Boundary == account.Boundary}
-		if ids := l.found[u.Name]; found.Bounded && ids != nil {
+		if ids, ok := l.found[u.Name]; ok {
 			found.AccessKeyIds = ids
 		}
 		found.Peer = isPeer(found.InstallationId, account.Peers)
-		foundIDs = append(foundIDs, found.Id)
 		switch {
 		case !found.Bounded:
 			// A user without the boundary isn't confined to backups, whatever its tags say.
@@ -287,13 +299,6 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			report.Alert = true
 		}
 		report.Found = append(report.Found, found)
-	}
-	// A listing in full shows which acknowledged users are gone. One cut short may leave out
-	// users that are still there, whose acknowledgements stay.
-	if !l.truncated {
-		if err := q.PruneBackupStorageAcknowledgements(ctx, db.PruneBackupStorageAcknowledgementsParams{WorkspaceID: ws, AccountID: account.ID, Found: foundIDs}); err != nil {
-			return report, err
-		}
 	}
 	if latched || len(l.missing) > 0 {
 		return report, s.queueKeySweep(ctx, tx)

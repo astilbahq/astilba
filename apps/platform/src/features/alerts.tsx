@@ -463,8 +463,6 @@ function ExposedDestination({
   );
 }
 
-// The storage account an account alert names. While it fires, its latest check couldn't list the
-// account's users, or found one management didn't make, which the storage accounts list names.
 /**
  * A peer user alert names the user's identity under its account, which the account's latest check
  * reports. Once the user is acknowledged or gone, the check may no longer name it.
@@ -505,6 +503,8 @@ function PeerUserAlert({
   );
 }
 
+// The storage account an account alert names. While it fires, its latest check couldn't list the
+// account's users, or found one management didn't make, which the storage accounts list names.
 function StorageAccountAlert({
   workspaceId,
   firing,

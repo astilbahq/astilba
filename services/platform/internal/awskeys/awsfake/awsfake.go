@@ -51,8 +51,7 @@ type AWS struct {
 	// Lag is how many requests an access key issued from now on fails with InvalidAccessKeyId
 	// before IAM has propagated it.
 	Lag int
-	// Before runs before each call is handled, outside the fake's lock, with the call's action.
-	Before func(action string)
+	before func(action string)
 	serial int
 	// reportMissing answers a call by name on a user that doesn't exist with NoSuchEntity even
 	// for an admin confined to a path. See ReportMissingUsers.
@@ -131,6 +130,24 @@ func (a *AWS) Fail(action string, codes ...string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.failures[action] = append(a.failures[action], codes...)
+}
+
+// Before sets a function run before each call is handled, outside the fake's lock, with the
+// call's action; nil removes it.
+func (a *AWS) Before(fn func(action string)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.before = fn
+}
+
+// hook runs the function Before set, if any.
+func (a *AWS) hook(action string) {
+	a.mu.Lock()
+	fn := a.before
+	a.mu.Unlock()
+	if fn != nil {
+		fn(action)
+	}
 }
 
 // Calls is how many times action was called.

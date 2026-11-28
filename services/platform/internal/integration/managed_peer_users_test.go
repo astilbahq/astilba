@@ -3,6 +3,8 @@ package integration
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,15 +89,26 @@ func (p *peerUsers) firing(t *testing.T, resource uuid.UUID) bool {
 	return len(list) > 0 && list[0].State == api.AlertFiring
 }
 
+// audited is how many audited acknowledgements name, by their own record, the found user identity.
+func (p *peerUsers) audited(t *testing.T, identity uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events e JOIN backup_storage_acknowledgements k ON k.workspace_id=e.workspace_id AND k.id=e.resource_id WHERE e.workspace_id=$1 AND e.action='backup.key.acknowledge' AND k.identity=$2`, p.ws, identity).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func (p *peerUsers) acknowledge(t *testing.T, u api.BackupStorageFoundUser, status int) {
 	t.Helper()
 	p.b.call("POST", p.account+"/found-users/"+u.UserName+"/acknowledge", api.BackupStorageAcknowledgementRequest{UserId: u.UserId, AccessKeyIds: u.AccessKeyIds}, status, nil)
 }
 
 // A user tagged with a peer installation raises its own alert the first time a check finds it, and
-// keeps it until the owner acknowledges that user by name, which is audited. The acknowledgement
-// covers the user as the owner reviewed it: another access key on it, or a user made again under
-// the name, raises the alert again, and a user that goes away takes its acknowledgement with it.
+// keeps it until the owner acknowledges that user by name, which is audited with the
+// acknowledgement's own record. The acknowledgement covers the user as the owner reviewed it:
+// another access key on it, or a user made again under the name, raises the alert again, and a user
+// that goes away ends its alert.
 // Peer users never raise backup_account, which stays for users the account check can't place.
 func TestAPeerUserAlertsUntilItIsAcknowledgedByName(t *testing.T) {
 	p := newPeerUsers(t)
@@ -132,9 +145,8 @@ func TestAPeerUserAlertsUntilItIsAcknowledgedByName(t *testing.T) {
 		t.Fatal("a refused acknowledgement cleared the alert")
 	}
 	p.acknowledge(t, got, 204)
-	var audited int
-	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.key.acknowledge' AND resource_id=$2`, p.ws, got.Id).Scan(&audited); err != nil || audited != 1 {
-		t.Fatalf("the acknowledgement was audited %d times: %v", audited, err)
+	if audited := p.audited(t, got.Id); audited != 1 {
+		t.Fatalf("the acknowledgement was audited %d times", audited)
 	}
 	if acknowledged := found(t, p.view(t), name); acknowledged.AcknowledgedAt == nil {
 		t.Fatalf("the acknowledged user is shown as %+v", acknowledged)
@@ -155,6 +167,10 @@ func TestAPeerUserAlertsUntilItIsAcknowledgedByName(t *testing.T) {
 		t.Fatalf("a user given another key is shown as %+v, alerting %v", again, p.firing(t, got.Id))
 	}
 	p.acknowledge(t, again, 204)
+	// Each acknowledgement is kept and audited on its own.
+	if audited := p.audited(t, got.Id); audited != 2 {
+		t.Fatalf("two acknowledgements were audited %d times", audited)
+	}
 	// A key deleted since is still covered.
 	p.aws.DeleteKey(again.AccessKeyIds[0])
 	if found(t, p.check(t), name).AcknowledgedAt == nil || p.firing(t, got.Id) {
@@ -168,9 +184,15 @@ func TestAPeerUserAlertsUntilItIsAcknowledgedByName(t *testing.T) {
 	if remade.Id == got.Id || remade.AcknowledgedAt != nil || !p.firing(t, remade.Id) || p.firing(t, got.Id) {
 		t.Fatalf("the user made again is shown as %+v", remade)
 	}
-	var kept int
-	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM backup_storage_acknowledgements WHERE workspace_id=$1`, p.ws).Scan(&kept); err != nil || kept != 0 {
-		t.Fatalf("%d acknowledgements outlived their user: %v", kept, err)
+	// A user with no access keys is acknowledged as having none.
+	p.aws.DeleteKey(remade.AccessKeyIds[0])
+	keyless := found(t, p.check(t), name)
+	if len(keyless.AccessKeyIds) != 0 || keyless.AcknowledgedAt != nil || !p.firing(t, remade.Id) {
+		t.Fatalf("the user without keys is shown as %+v", keyless)
+	}
+	p.acknowledge(t, keyless, 204)
+	if found(t, p.check(t), name).AcknowledgedAt == nil || p.firing(t, remade.Id) {
+		t.Fatal("the user without keys still alerts once acknowledged")
 	}
 	// A user that goes away ends its alert.
 	p.aws.DeleteUser(name)
@@ -236,5 +258,36 @@ func TestEachPeerUserHasItsOwnAlert(t *testing.T) {
 	var audited int
 	if err := p.f.st.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_events WHERE workspace_id=$1 AND action='backup.key.acknowledge'`, p.ws).Scan(&audited); err != nil || audited != 1 {
 		t.Fatalf("refused acknowledgements were audited: %d, %v", audited, err)
+	}
+}
+
+// A found user deleted between the check's listing and its listing of the user's access keys is
+// left out of the report, as one deleted before the listing is, and the check still succeeds.
+func TestAFoundUserDeletedDuringTheCheckIsLeftOut(t *testing.T) {
+	p := newPeerUsers(t)
+	kept, deleted := "astilba-"+uuid.NewString(), "astilba-"+uuid.NewString()
+	p.aws.CreateUser(kept, p.path, p.boundary, map[string]string{"astilba:installation": p.peer.String()}, "")
+	p.aws.CreateUser(deleted, p.path, p.boundary, map[string]string{"astilba:installation": p.peer.String()}, "")
+	// The user is deleted once the check has listed the users.
+	var listed atomic.Bool
+	var once sync.Once
+	p.aws.Before(func(action string) {
+		switch {
+		case action == "ListUsers":
+			listed.Store(true)
+		case action == "ListAccessKeys" && listed.Load():
+			once.Do(func() { p.aws.DeleteUser(deleted) })
+		}
+	})
+	t.Cleanup(func() { p.aws.Before(nil) })
+	view := p.check(t)
+	found(t, view, kept)
+	for _, u := range view.FoundUsers {
+		if u.UserName == deleted {
+			t.Fatalf("the deleted user is shown as %+v", u)
+		}
+	}
+	if p.aws.UserID(deleted) != "" {
+		t.Fatal("the user wasn't deleted during the check")
 	}
 }

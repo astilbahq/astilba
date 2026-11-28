@@ -287,24 +287,22 @@ func foundUserID(account uuid.UUID, name, iamUserID string) uuid.UUID {
 	return uuid.NewSHA1(account, []byte("iam-user\x00"+name+"\x00"+iamUserID))
 }
 
-// acknowledgement is the time an acknowledgement covering a found user was made, or nil: one of
-// its identity that holds every access key the check found on it. Only a bounded peer's user is
+// acknowledgement is the time the latest acknowledgement covering a found user was made, or nil:
+// one of its identity that holds every access key the check found on it. acks are newest first. Only a bounded peer's user is
 // acknowledged, as UnacknowledgedPeerBackupStorageUsers reads it.
 func acknowledgement(account uuid.UUID, u api.BackupStorageFoundUser, acks []db.BackupStorageAcknowledgementsRow) *time.Time {
 	if !u.Peer || !u.Bounded {
 		return nil
 	}
 	for _, a := range acks {
-		if a.AccountID != account || a.ID != u.Id {
-			continue
-		}
+		covers := a.AccountID == account && a.Identity == u.Id
 		for _, k := range u.AccessKeyIds {
-			if !slices.Contains(a.AccessKeyIds, k) {
-				return nil
-			}
+			covers = covers && slices.Contains(a.AccessKeyIds, k)
 		}
-		at := a.AcknowledgedAt
-		return &at
+		if covers {
+			at := a.AcknowledgedAt
+			return &at
+		}
 	}
 	return nil
 }
@@ -446,9 +444,10 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 // raised. The owner names the user and what they reviewed of it: its IAM user ID and access keys,
 // which must be what the latest check found. The acknowledgement covers that identity and those
 // keys alone, so a user made again under the name, or given another key, raises the alert again.
+// Each acknowledgement is a row of its own, which the audit names.
 func (s *Service) AcknowledgeFoundBackupStorageUser(ctx context.Context, p store.Principal, ws, account uuid.UUID, user string, in api.BackupStorageAcknowledgementRequest) error {
-	id := foundUserID(account, user, in.UserId)
-	return s.scope(ctx, p, ws, ownerSettings, "backup.key.acknowledge", id, func(tx pgx.Tx) error {
+	ack := uuid.New()
+	return s.scope(ctx, p, ws, ownerSettings, "backup.key.acknowledge", ack, func(tx pgx.Tx) error {
 		q := db.New(tx)
 		rows, err := q.ListBackupStorageAccounts(ctx, ws)
 		if err != nil {
@@ -463,7 +462,7 @@ func (s *Service) AcknowledgeFoundBackupStorageUser(ctx context.Context, p store
 			return domain.Conflict
 		}
 		j := slices.IndexFunc(report.Found, func(f api.BackupStorageFoundUser) bool { return f.UserName == user })
-		if j < 0 || strings.TrimSpace(user) == "" {
+		if j < 0 {
 			return domain.NotFound
 		}
 		found := report.Found[j]
@@ -474,11 +473,13 @@ func (s *Service) AcknowledgeFoundBackupStorageUser(ctx context.Context, p store
 		if !isPeer(found.InstallationId, rows[i].Peers) {
 			return errAcknowledgeNotPeer
 		}
-		reviewed := slices.Sorted(slices.Values(in.AccessKeyIds))
-		if found.Id != id || found.UserId != in.UserId || !slices.Equal(slices.Sorted(slices.Values(found.AccessKeyIds)), slices.Compact(reviewed)) {
+		reviewed := slices.Compact(slices.Sorted(slices.Values(in.AccessKeyIds)))
+		if found.Id != foundUserID(account, user, in.UserId) || !slices.Equal(slices.Sorted(slices.Values(found.AccessKeyIds)), reviewed) {
 			return errFoundChanged
 		}
-		return q.AcknowledgeBackupStorageUser(ctx, db.AcknowledgeBackupStorageUserParams{WorkspaceID: ws, ID: id, AccountID: account, UserName: user, IamUserID: in.UserId, AccessKeyIds: slices.Compact(reviewed)})
+		// A user with no access keys is acknowledged with none, which the column holds as an
+		// empty array rather than NULL.
+		return q.AcknowledgeBackupStorageUser(ctx, db.AcknowledgeBackupStorageUserParams{WorkspaceID: ws, ID: ack, AccountID: account, Identity: found.Id, UserName: user, IamUserID: in.UserId, AccessKeyIds: append([]string{}, reviewed...)})
 	})
 }
 

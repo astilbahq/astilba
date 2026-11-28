@@ -64,27 +64,26 @@ func (q *Queries) AccountBackupStorageKeys(ctx context.Context, arg AccountBacku
 }
 
 const acknowledgeBackupStorageUser = `-- name: AcknowledgeBackupStorageUser :exec
-INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,user_name,iam_user_id,access_key_ids)
-VALUES($1,$2,$3,$4,$5,$6::text[])
-ON CONFLICT (workspace_id,id) DO UPDATE SET access_key_ids = EXCLUDED.access_key_ids,acknowledged_at = clock_timestamp()
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,identity,user_name,iam_user_id,access_key_ids)
+VALUES($1,$2,$3,$4,$5,$6,$7::text[])
 `
 
 type AcknowledgeBackupStorageUserParams struct {
 	WorkspaceID  uuid.UUID `json:"workspace_id"`
 	ID           uuid.UUID `json:"id"`
 	AccountID    uuid.UUID `json:"account_id"`
+	Identity     uuid.UUID `json:"identity"`
 	UserName     string    `json:"user_name"`
 	IamUserID    string    `json:"iam_user_id"`
 	AccessKeyIds []string  `json:"access_key_ids"`
 }
 
-// id is derived from the account, the user's name and its IAM user ID, so acknowledging the same
-// user again replaces the access keys the acknowledgement covers.
 func (q *Queries) AcknowledgeBackupStorageUser(ctx context.Context, arg AcknowledgeBackupStorageUserParams) error {
 	_, err := q.db.Exec(ctx, acknowledgeBackupStorageUser,
 		arg.WorkspaceID,
 		arg.ID,
 		arg.AccountID,
+		arg.Identity,
 		arg.UserName,
 		arg.IamUserID,
 		arg.AccessKeyIds,
@@ -217,13 +216,13 @@ func (q *Queries) BackupStorageAccount(ctx context.Context, arg BackupStorageAcc
 }
 
 const backupStorageAcknowledgements = `-- name: BackupStorageAcknowledgements :many
-SELECT account_id,id,access_key_ids,acknowledged_at FROM backup_storage_acknowledgements
-WHERE workspace_id = $1 ORDER BY account_id,id LIMIT 10000
+SELECT account_id,identity,access_key_ids,acknowledged_at FROM backup_storage_acknowledgements
+WHERE workspace_id = $1 ORDER BY account_id,identity,acknowledged_at DESC LIMIT 10000
 `
 
 type BackupStorageAcknowledgementsRow struct {
 	AccountID      uuid.UUID `json:"account_id"`
-	ID             uuid.UUID `json:"id"`
+	Identity       uuid.UUID `json:"identity"`
 	AccessKeyIds   []string  `json:"access_key_ids"`
 	AcknowledgedAt time.Time `json:"acknowledged_at"`
 }
@@ -240,7 +239,7 @@ func (q *Queries) BackupStorageAcknowledgements(ctx context.Context, workspaceID
 		var i BackupStorageAcknowledgementsRow
 		if err := rows.Scan(
 			&i.AccountID,
-			&i.ID,
+			&i.Identity,
 			&i.AccessKeyIds,
 			&i.AcknowledgedAt,
 		); err != nil {
@@ -1044,24 +1043,6 @@ func (q *Queries) PolicyReportedGenerations(ctx context.Context, arg PolicyRepor
 	return items, nil
 }
 
-const pruneBackupStorageAcknowledgements = `-- name: PruneBackupStorageAcknowledgements :exec
-DELETE FROM backup_storage_acknowledgements
-WHERE workspace_id = $1 AND account_id = $2 AND NOT (id = ANY($3::uuid[]))
-`
-
-type PruneBackupStorageAcknowledgementsParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	AccountID   uuid.UUID   `json:"account_id"`
-	Found       []uuid.UUID `json:"found"`
-}
-
-// A check that listed the account's users in full forgets the acknowledgements of users it didn't
-// find: a user made again has another IAM user ID, and so another identity.
-func (q *Queries) PruneBackupStorageAcknowledgements(ctx context.Context, arg PruneBackupStorageAcknowledgementsParams) error {
-	_, err := q.db.Exec(ctx, pruneBackupStorageAcknowledgements, arg.WorkspaceID, arg.AccountID, arg.Found)
-	return err
-}
-
 const recordBackupRemint = `-- name: RecordBackupRemint :exec
 UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
 WHERE workspace_id = $1 AND id = $2
@@ -1401,7 +1382,7 @@ CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found'
 WHERE a.workspace_id = $1 AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
     AND u.value->>'installationId' = ANY(a.peers::text[])
     AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
-        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.id = (u.value->>'id')::uuid
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.identity = (u.value->>'id')::uuid
             AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
 ORDER BY 1 LIMIT 10000
 `

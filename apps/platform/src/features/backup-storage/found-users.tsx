@@ -10,7 +10,9 @@ import { ConfirmAction } from "./confirm-action";
 type Account = Schema["BackupStorageAccount"];
 type FoundUser = Schema["BackupStorageFoundUser"];
 
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Management tags users with an installation's UUID in lower case, and takes no other form as a
+// peer's.
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * The IAM users the latest account check found under the workspace's path with no record here,
@@ -104,7 +106,8 @@ function FoundUserItem({
           </>
         )}
       </p>
-      {user.bounded && (
+      {/* A user being revoked that the latest check didn't list has no keys to show. */}
+      {user.bounded && !revoking && (
         <p className={s.muted}>
           {user.accessKeyIds.length
             ? t(($) => $.found.accessKeys, {
@@ -157,9 +160,10 @@ function FoundUserItem({
           }}
         />
       )}
-      {owner && peer && user.bounded && (
+      {owner && peer && user.bounded && !revoking && (
         // The acknowledgement covers this user as shown: management refuses it if the latest
-        // check found another IAM user under the name, or other access keys.
+        // check found another IAM user under the name, or other access keys, and the list is
+        // then shown again as the check found it.
         <ConfirmAction
           available={!user.acknowledgedAt}
           focusAfter={item}
@@ -176,19 +180,22 @@ function FoundUserItem({
           })}
           confirm={t(($) => $.found.acknowledgeConfirm)}
           run={async () => {
-            await result(
-              client.POST(
-                `${backupStorageAccountPath}/found-users/{userName}/acknowledge`,
-                {
-                  params: { path: { ...path, userName: user.userName } },
-                  body: {
-                    userId: user.userId,
-                    accessKeyIds: user.accessKeyIds,
+            try {
+              await result(
+                client.POST(
+                  `${backupStorageAccountPath}/found-users/{userName}/acknowledge`,
+                  {
+                    params: { path: { ...path, userName: user.userName } },
+                    body: {
+                      userId: user.userId,
+                      accessKeyIds: user.accessKeyIds,
+                    },
                   },
-                },
-              ),
-            );
-            await refresh();
+                ),
+              );
+            } finally {
+              await refresh();
+            }
           }}
         />
       )}

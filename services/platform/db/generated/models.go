@@ -217,6 +217,7 @@ type BackupStorageAcknowledgement struct {
 	WorkspaceID    uuid.UUID `json:"workspace_id"`
 	ID             uuid.UUID `json:"id"`
 	AccountID      uuid.UUID `json:"account_id"`
+	Identity       uuid.UUID `json:"identity"`
 	UserName       string    `json:"user_name"`
 	IamUserID      string    `json:"iam_user_id"`
 	AccessKeyIds   []string  `json:"access_key_ids"`

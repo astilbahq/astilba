@@ -2059,7 +2059,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it without an alert. Needs recent authentication. */
+        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it and never revoked here. Each raises a backup_peer_user alert until the owner acknowledges it by name. Needs recent authentication. */
         post: operations["AddBackupStorageAccountPeer"];
         delete?: never;
         options?: never;
@@ -4927,13 +4927,13 @@ export interface components {
         BackupStorageFoundUser: {
             /**
              * Format: uuid
-             * @description The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert names it as its resource.
+             * @description The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert names it as its resource. The nil UUID for a user management is revoking that the latest check didn't report, since its record makes it known.
              */
             id: string;
             userName: string;
-            /** @description Its IAM user ID, which a user made again under the same name doesn't keep. */
+            /** @description Its IAM user ID, which a user made again under the same name doesn't keep. Empty for a user being revoked that the latest check didn't report. */
             userId: string;
-            /** @description The access keys the check found on it, if it has the account's permissions boundary. */
+            /** @description The access keys the check found on it, if it has the account's permissions boundary. Empty for a user without it, or one being revoked that the latest check didn't report. */
             accessKeyIds: string[];
             /**
              * Format: date-time
