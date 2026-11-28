@@ -347,6 +347,62 @@ func (q *Queries) DisableWorkspacePreviewPolicies(ctx context.Context, workspace
 	return err
 }
 
+const eraseRecoveredEndedSecretVersions = `-- name: EraseRecoveredEndedSecretVersions :exec
+UPDATE secret_versions v SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,
+ erased_at = COALESCE(s.retired_at,e.purged_at,$1::timestamptz)
+FROM secrets s JOIN environments e ON e.workspace_id = s.workspace_id AND e.id = s.environment_id
+WHERE v.workspace_id = $2 AND s.workspace_id = v.workspace_id AND s.id = v.secret_id AND v.erased_at IS NULL
+ AND (s.retired_at IS NOT NULL OR e.state IN ('purging','purged')
+  OR e.purpose = 'preview' AND e.created_at < $3::timestamptz AND e.id <> ALL($4::uuid[]))
+`
+
+type EraseRecoveredEndedSecretVersionsParams struct {
+	ErasedAt    time.Time   `json:"erased_at"`
+	WorkspaceID uuid.UUID   `json:"workspace_id"`
+	Cut         *time.Time  `json:"cut"`
+	Carried     []uuid.UUID `json:"carried"`
+}
+
+// After a recovery merge, erases each value the restored database holds that retiring or purging
+// erased, or that ending a preview deleted: every version of a retired secret or of a purging or
+// purged environment, and of a preview that the base leaves out (carried) although it was created
+// before the base's selection cut (cut). Every preview created after the cut, or live at capture,
+// is carried, so such a preview had ended, though the restored database can still name it in an
+// open request. Recovery deletes the copies of a preview no open request names afterwards
+// (DeleteEndedPreviewSecretVersions). Without a cut, the archive has no window and the last rule
+// is skipped.
+func (q *Queries) EraseRecoveredEndedSecretVersions(ctx context.Context, arg EraseRecoveredEndedSecretVersionsParams) error {
+	_, err := q.db.Exec(ctx, eraseRecoveredEndedSecretVersions,
+		arg.ErasedAt,
+		arg.WorkspaceID,
+		arg.Cut,
+		arg.Carried,
+	)
+	return err
+}
+
+const eraseRecoveredSecretVersionRanges = `-- name: EraseRecoveredSecretVersionRanges :exec
+UPDATE secret_versions v SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,erased_at = $1::timestamptz
+FROM jsonb_to_recordset($3::jsonb) AS r(secret uuid,first jsonb,last jsonb)
+WHERE v.workspace_id = $2 AND v.secret_id = r.secret AND v.erased_at IS NULL
+ AND (v.created_at,v.id) >= ((r.first->>'createdAt')::timestamptz,(r.first->>'id')::uuid)
+ AND (v.created_at,v.id) <= ((r.last->>'createdAt')::timestamptz,(r.last->>'id')::uuid)
+`
+
+type EraseRecoveredSecretVersionRangesParams struct {
+	ErasedAt    time.Time `json:"erased_at"`
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	Ranges      []byte    `json:"ranges"`
+}
+
+// After a recovery merge, erases each value the restored database holds of a version inside one
+// of the base's erasure ranges (SecretErasure, as JSON): those of the range's secret from its first
+// to its last position, by (created_at, id), both included.
+func (q *Queries) EraseRecoveredSecretVersionRanges(ctx context.Context, arg EraseRecoveredSecretVersionRangesParams) error {
+	_, err := q.db.Exec(ctx, eraseRecoveredSecretVersionRanges, arg.ErasedAt, arg.WorkspaceID, arg.Ranges)
+	return err
+}
+
 const fenceServerController = `-- name: FenceServerController :exec
 UPDATE servers SET controller_generation = $1,awaiting_transfer=true,credential_hash=NULL,
     previous_hash=NULL,previous_until=NULL,enrollment_hash=NULL,enrollment_expires=NULL,poll_id=NULL,poll_until=NULL,rotation_requested=false

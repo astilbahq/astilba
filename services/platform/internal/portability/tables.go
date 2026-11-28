@@ -78,8 +78,8 @@ var version5Tables = func() []table {
 // when management first received each backup snapshot; version 15 added restores of a revoked
 // server's backup snapshots onto another server; version 17 added each restore's latest discard;
 // version 19 added the server each backup destination is bound to; version 21 added managed backup
-// storage accounts and the keys management minted with them. Versions 10, 12, 14, 16, 18 and 20 are
-// recovery bases.
+// storage accounts and the keys management minted with them. Versions 10, 12, 14, 16, 18, 20, 22
+// and 23 are recovery bases, so the next export version is 24.
 const ArchiveVersion = 21
 
 var version7Tables = func() []table {

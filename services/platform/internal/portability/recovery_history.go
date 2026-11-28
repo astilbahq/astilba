@@ -1,6 +1,7 @@
 package portability
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json/v2"
@@ -20,10 +21,15 @@ import (
 // says which export version's tables each recovery base version carries
 // (TestExportVersionsStayBelowTheRecoveryBaseVersion). A release before it refuses such a base, so
 // cross-host recovery has to run on the release that sealed the newest base or a newer one.
-const RecoveryArchiveVersion = 22
+// Version 23 carries erased secret versions as ranges (RecoveryHistory.Erasures) rather than as rows.
+const RecoveryArchiveVersion = 23
+
+// recoveryErasureRanges is the first recovery base version that carries erasure ranges. One before
+// it carries every erased version of its secrets as a row instead.
+const recoveryErasureRanges = 23
 
 // recoveryBaseTables maps each recovery base version to the export version whose tables it carries.
-var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, 20: 19, RecoveryArchiveVersion: ArchiveVersion}
+var recoveryBaseTables = map[int]int{10: 9, 12: 11, 14: 13, 16: 15, 18: 17, 20: 19, 22: 21, RecoveryArchiveVersion: ArchiveVersion}
 
 const (
 	// RecoveryWindowTarget is how far back a base's applied history reaches when it fits.
@@ -63,6 +69,32 @@ type RecoveryHistory struct {
 	// Superseded names every base a host may still hold that this management captured or
 	// recovered before this one, which this base vouches are its ancestors.
 	Superseded []SupersededBase `json:"superseded"`
+	// Erasures are the erased versions of the carried secrets the base leaves out, from
+	// recoveryErasureRanges on (baseSecretErasures).
+	Erasures []SecretErasure `json:"erasures,omitzero"`
+}
+
+// SecretErasure is a range of one secret's versions, in the order of their creation, every one of
+// which was erased when the base was captured: those from First to Last, both included.
+type SecretErasure struct {
+	Secret uuid.UUID       `json:"secret"`
+	First  VersionPosition `json:"first"`
+	Last   VersionPosition `json:"last"`
+}
+
+// VersionPosition is where a secret version comes in its secret's order: by creation time, then
+// by ID as PostgreSQL orders them, byte by byte.
+type VersionPosition struct {
+	CreatedAt time.Time `json:"createdAt"`
+	ID        uuid.UUID `json:"id"`
+}
+
+// comparePositions orders two versions of one secret as PostgreSQL orders (created_at, id).
+func comparePositions(a, b VersionPosition) int {
+	if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+		return c
+	}
+	return bytes.Compare(a.ID[:], b.ID[:])
 }
 
 // RecoveryEnvironment is where a carried environment's applied history starts: Floor is the
@@ -125,7 +157,7 @@ func (h *RecoveryHistory) Records() int {
 	if h == nil {
 		return 0
 	}
-	return len(h.Environments) + len(h.Applied) + len(h.Settled) + len(h.Superseded)
+	return len(h.Environments) + len(h.Applied) + len(h.Settled) + len(h.Superseded) + len(h.Erasures)
 }
 
 func executionState(state string) bool {
@@ -215,6 +247,37 @@ func validateRecoveryHistory(a Archive) error {
 			return ErrArchive
 		}
 		bases[b.Base] = true
+	}
+	return validateSecretErasures(a)
+}
+
+// validateSecretErasures checks a base's erasure ranges: only a base from recoveryErasureRanges on
+// has them, each belongs to a secret the base carries that isn't retired, as baseSecretErasures
+// writes them, and they are listed in order without overlapping.
+func validateSecretErasures(a Archive) error {
+	h := a.Recovery
+	if (h.Erasures != nil) != (a.Version >= recoveryErasureRanges) {
+		return ErrArchive
+	}
+	live := map[uuid.UUID]bool{}
+	for _, row := range a.Tables["secrets"] {
+		var id uuid.UUID
+		if json.Unmarshal(row["id"], &id) != nil {
+			return ErrArchive
+		}
+		live[id] = string(row["retired_at"]) == "null"
+	}
+	for i, e := range h.Erasures {
+		if !live[e.Secret] || e.First.ID == uuid.Nil || e.Last.ID == uuid.Nil || e.First.CreatedAt.IsZero() || e.Last.CreatedAt.IsZero() || comparePositions(e.First, e.Last) > 0 {
+			return ErrArchive
+		}
+		if i == 0 {
+			continue
+		}
+		prior := h.Erasures[i-1]
+		if c := bytes.Compare(prior.Secret[:], e.Secret[:]); c > 0 || c == 0 && comparePositions(prior.Last, e.First) >= 0 {
+			return ErrArchive
+		}
 	}
 	return nil
 }

@@ -76,9 +76,9 @@ func unresolvedReferences(t *testing.T, f *fixture, ws uuid.UUID) []uuid.UUID {
 // version each time. Of each secret they now carry its newest 10 versions and every version a
 // carried row names: here the applied revision, the draft, a queued deployment and an operation's
 // note, which stands for any shape a row may name one in, and its current version, even when it is
-// older than those. A base also carries every erased version,
-// however old, so recovering from a backup that still holds the value erases it again. An import and
-// a recovery from them leave no revision naming a missing version.
+// older than those. A base also lists the erased versions it leaves out, however old, so recovering
+// from a backup that still holds the value erases it again. An import and a recovery from them leave
+// no revision naming a missing version.
 func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
@@ -208,10 +208,21 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 		return false
 	}
 
-	// A recovery base carries the newest 10, the named versions and every erased one.
+	// A recovery base carries the versions an export does, and lists the erased versions it leaves
+	// out. They were made within a week of the capture, so each is a range of its own.
 	base := capturedBase(t, f, ws)
-	if got, want := archivedVersions(t, base), sortedIDs(append(slices.Clone(exported), versions[2], versions[4], rotated[1])...); !slices.Equal(got, want) {
-		t.Fatalf("a recovery base carried versions %v, want %v", got, want)
+	if got := archivedVersions(t, base); !slices.Equal(got, exported) {
+		t.Fatalf("a recovery base carried versions %v, want %v", got, exported)
+	}
+	ranged := map[uuid.UUID]bool{}
+	for _, e := range base.Recovery.Erasures {
+		if e.First.ID != e.Last.ID {
+			t.Fatal("a base joined versions made this week into one range")
+		}
+		ranged[e.First.ID] = true
+	}
+	if len(ranged) != 3 || !ranged[versions[2]] || !ranged[versions[4]] || !ranged[rotated[1]] {
+		t.Fatalf("a recovery base listed erasures %+v", base.Recovery.Erasures)
 	}
 
 	// An export carries the newest 10 and the named versions, and its import names none it lacks.
