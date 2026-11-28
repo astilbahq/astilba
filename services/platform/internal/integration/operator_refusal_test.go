@@ -1,12 +1,14 @@
 package integration
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Management's own configuration can refuse a pipeline's connection: an operator removes its
@@ -86,11 +88,9 @@ func TestOperatorRefusalWaitsQueuedWhileTheRunnersOtherCommandsGo(t *testing.T) 
 				t.Fatal("the runner's update was not delivered past the waiting build:", updating.Id, updating.Kind)
 			}
 			r.report(t, updating, "succeeded")
-			// The dispatcher keeps the build queued, rather than giving it the runner's turn back.
+			// The dispatcher keeps the build queued, rather than giving it the runner's turn back. No poll
+			// comes first, which would hand a dispatched build back to the queue itself.
 			r.dispatcherPassed(t, op.Id)
-			if c := r.poll(t, 200); c != nil {
-				t.Fatal("the runner was given a command while the build waited:", c.Id)
-			}
 			waiting()
 
 			if tc.restore != nil {
@@ -131,11 +131,11 @@ func TestOperatorRefusalWithholdsAPossiblyHeldBuildsValues(t *testing.T) {
 	}
 }
 
-// dispatcherPassed waits until the dispatcher has worked the operation's job again, after the
-// runner's turn was free for it.
+// dispatcherPassed waits until the dispatcher has finished a pass over the operation's job that
+// began after the runner's turn was free for it.
 func (r *refusalRunner) dispatcherPassed(t *testing.T, operation uuid.UUID) {
 	t.Helper()
-	const attempted = "SELECT j.attempted_at FROM river_job j JOIN execution_operations o ON o.job_id=j.id WHERE o.id=$1"
+	const attempted = "SELECT j.attempted_at FROM river_job j JOIN execution_operations o ON o.job_id=j.id WHERE o.id=$1 AND j.state<>'running'"
 	var since time.Time
 	if err := r.f.st.Pool.QueryRow(t.Context(), "SELECT now()").Scan(&since); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func (r *refusalRunner) dispatcherPassed(t *testing.T, operation uuid.UUID) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var at *time.Time
-		if err := r.f.st.Pool.QueryRow(t.Context(), attempted, operation).Scan(&at); err != nil {
+		if err := r.f.st.Pool.QueryRow(t.Context(), attempted, operation).Scan(&at); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatal(err)
 		}
 		if at != nil && at.After(since) {
