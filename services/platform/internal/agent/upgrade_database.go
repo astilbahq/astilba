@@ -160,7 +160,7 @@ FROM pg_catalog.pg_database d
 WHERE d.oid = 4 OR d.datname IN (pg_catalog.current_database(), 'postgres', 'template1')
 UNION ALL SELECT 'settings', pg_catalog.string_agg(t.name, ',' ORDER BY t.n)
 FROM (VALUES ` + strings.Join(settings, ", ") + `) AS t(n, name, setting) LEFT JOIN pg_catalog.pg_settings s ON s.name = t.name
-WHERE s.setting IS DISTINCT FROM t.setting OR EXISTS (SELECT 1 FROM pg_catalog.pg_file_settings f WHERE pg_catalog.lower(f.name) = pg_catalog.lower(t.name) AND f.applied AND f.sourcefile IS DISTINCT FROM pg_catalog.current_setting('config_file'))) AS differ
+WHERE s.setting IS DISTINCT FROM t.setting OR EXISTS (SELECT 1 FROM pg_catalog.pg_file_settings f WHERE pg_catalog.lower(f.name) = pg_catalog.lower(t.name) AND f.sourcefile IS DISTINCT FROM pg_catalog.current_setting('config_file'))) AS differ
 WHERE what <> ''
 ORDER BY key COLLATE "C"`
 }
