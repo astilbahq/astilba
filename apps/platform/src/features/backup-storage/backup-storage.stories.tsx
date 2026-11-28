@@ -169,8 +169,9 @@ export const RefusedPeerRevoke: Story = {
         /^Tagged by a peer installation, and acknowledged on /,
       ),
     ).toBeVisible();
+    // The modal hides the page from assistive technology while it is open.
     await expect(
-      within(user).queryByRole("button", { name: "Revoke user" }),
+      within(user).queryByRole("button", { name: "Revoke user", hidden: true }),
     ).not.toBeInTheDocument();
   },
 };
