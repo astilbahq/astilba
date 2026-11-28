@@ -120,13 +120,16 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 var localeDatabases = map[string]string{"application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1"}
 
 // upgradeLocaleSQL lists, one per line as key:properties, the databases of localeDatabases whose
-// encoding or locale differs from template0's. template0 is always oid 4, which the checks
-// before it require, and can't be made again, so it keeps what initdb gave the cluster, and the upgrade's new cluster gives every database what its
-// own initdb chose, from the same image defaults. Before the owner model the database user is a
-// superuser and can drop template1 or postgres and create it again from template0 in another
+// encoding or locale differs from template0's. template0 is always oid 4, which the checks before
+// it require, and can't be made again, so it keeps what initdb gave the cluster. The upgrade's new
+// cluster gives every database what the target image's initdb chooses by default, which is
+// template0's for a source the pinned image made with its defaults. A source made with other
+// locale variables differs from the new cluster in template0 too, and so in the application's
+// database, which the restore's verification refuses. Before the owner model the database user is
+// a superuser and can drop template1 or postgres and create it again from template0 in another
 // encoding or locale, or do the same to the application's database from another one. The columns
-// are PostgreSQL 17's and 18's, the majors an upgrade starts from or reaches. datcollversion is left
-// out: it records the collation library's version, which a new cluster records afresh.
+// are PostgreSQL 17's and 18's, the majors an upgrade starts from or reaches. datcollversion is
+// left out: it records the collation library's version, which a new cluster records afresh.
 // inline-sql: reads a managed database's catalog, not the platform database.
 const upgradeLocaleSQL = `SELECT CASE WHEN d.datname = pg_catalog.current_database() THEN 'application' ELSE d.datname END || ':' || pg_catalog.concat_ws(',',
 	CASE WHEN d.encoding <> t.encoding THEN 'encoding' END,
