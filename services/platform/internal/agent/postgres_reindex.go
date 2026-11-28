@@ -255,9 +255,11 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		}
 		return listedDatabase{state: read[0], name: string(name), quoted: string(quoted), key: read[3]}, true, nil
 	}
-	// rebuild returns the exclusion-constraint indexes it skipped, named as PostgreSQL quotes them
-	// in the bytes the database holds: no conversion to UTF-8 exists from every encoding, nor for
-	// every character, so the note escapes what isn't UTF-8, as it does databases' names.
+	// rebuild returns the exclusion-constraint indexes it skipped, named as PostgreSQL quotes them,
+	// in UTF-8 where they convert to it. No conversion exists from every encoding, nor for every
+	// character, nor for bytes a SQL_ASCII database holds that aren't UTF-8, so where a listing's
+	// names don't all convert, they are listed again as the bytes the database holds, and the note
+	// escapes what isn't UTF-8, as it does databases' names.
 	rebuild := func(database reindexDatabase, name string) ([]string, error) {
 		leftovers, err := indexes(database, domain.ReindexLeftovers)
 		if err != nil {
@@ -293,8 +295,14 @@ func (e *Engine) runPostgresReindex(ctx context.Context, helper pgClient, a doma
 		}
 		var skipped []string
 		for _, query := range queries {
-			// inline-sql: runs in a managed customer database through psql, not in the platform database
-			rows, err := list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, 'SQL_ASCII') FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
+			named := func(encoding string) ([]listedRow, error) {
+				// inline-sql: runs in a managed customer database through psql, not in the platform database
+				return list(database, "SELECT i.oid, convert_to(i.oid::regclass::text, '"+encoding+"') FROM ("+domain.ExclusionIndexes(query)+") AS i(oid)")
+			}
+			rows, err := named("UTF8")
+			if err != nil && ctx.Err() == nil {
+				rows, err = named("SQL_ASCII")
+			}
 			if err != nil {
 				return nil, err
 			}

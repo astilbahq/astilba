@@ -468,9 +468,17 @@ RESET ROLE;`); err != nil {
 	// LATIN1's, which aren't UTF-8: an index the advice matches, and an exclusion constraint's
 	// index. The names are made in the database, since a command's arguments can't carry them.
 	// The index is rebuilt from its oid, and the exclusion index named with its byte escaped. A
-	// MULE_INTERNAL database, which has no conversion to UTF-8, is rebuilt, its exclusion index
-	// named without one.
-	query(`CREATE DATABASE ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE mule TEMPLATE template0 ENCODING 'MULE_INTERNAL' LC_COLLATE 'C' LC_CTYPE 'C'`)
+	// MULE_INTERNAL database, which has no conversion to UTF-8, is rebuilt, and listing its
+	// exclusion index doesn't fail the step. A LATIN1 database's exclusion index named "é" is
+	// named in UTF-8.
+	query(`CREATE DATABASE ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE mule TEMPLATE template0 ENCODING 'MULE_INTERNAL' LC_COLLATE 'C' LC_CTYPE 'C'`, `CREATE DATABASE "a latin" TEMPLATE template0 ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C'`)
+	latin1 := a
+	latin1Database := *a.Postgres
+	latin1Database.Database = "a latin"
+	latin1.Postgres = &latin1Database
+	if _, err = e.pgQuery(ctx, pgClient{container: updated}, latin1, `CREATE TABLE spots(c bpchar); DO $$ BEGIN EXECUTE format('ALTER TABLE spots ADD CONSTRAINT %I EXCLUDE USING btree (c WITH =)', chr(233)); END $$`); err != nil {
+		t.Fatal(err)
+	}
 	ascii := a
 	asciiDatabase := *a.Postgres
 	asciiDatabase.Database = "ascii"
@@ -515,7 +523,7 @@ END $$`} {
 	}
 	note, err = e.reindexPostgres(ctx, after, begin)
 	e.Point = nil
-	if err != nil || staleFile == "" || !strings.Contains(note, `ascii.public."lot\xe9"`) || !strings.Contains(note, "ascii.public.records_slot_excl") || strings.Contains(note, "did not finish") {
+	if err != nil || staleFile == "" || !strings.Contains(note, `ascii.public."lot\xe9"`) || !strings.Contains(note, "ascii.public.records_slot_excl") || !strings.Contains(note, `"a latin".public."é"`) || strings.Contains(note, "did not finish") {
 		t.Fatalf("a database with names that aren't UTF-8, or an index renamed during the step: %q, %v", note, err)
 	}
 	if file(ascii, cafeIndex) == asciiFile || file(ascii, "'plain'") != asciiPlain {
@@ -585,7 +593,7 @@ END $$`, `CREATE EVENT TRIGGER swap ON ddl_command_start WHEN TAG IN ('REINDEX')
 	if record, _, _ := e.Journal.postgresData(volume); record.Image != current.Image {
 		t.Fatalf("the rebuilt storage records %+v", record)
 	}
-	query(`DROP DATABASE ascii`, `DROP DATABASE mule`)
+	query(`DROP DATABASE ascii`, `DROP DATABASE mule`, `DROP DATABASE "a latin"`)
 	if raw, err := e.pgQuery(ctx, pgClient{container: updated}, a, "SELECT rolsuper FROM pg_roles WHERE rolname = 'tenant'"); err != nil || strings.TrimSpace(string(raw)) != "f" {
 		t.Fatalf("a database owner's function ran as superuser: %q, %v", raw, err)
 	}
