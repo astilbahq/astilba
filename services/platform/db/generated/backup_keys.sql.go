@@ -395,6 +395,23 @@ func (q *Queries) ClaimDueBackupStorageKey(ctx context.Context, stalledWorkspace
 	return i, err
 }
 
+const clearServerBackupRemints = `-- name: ClearServerBackupRemints :exec
+UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
+WHERE workspace_id = $1 AND server_id = $2 AND account_id IS NOT NULL
+`
+
+type ClearServerBackupRemintsParams struct {
+	WorkspaceID uuid.UUID  `json:"workspace_id"`
+	ServerID    *uuid.UUID `json:"server_id"`
+}
+
+// A revoked server's destinations need no new key until it is renewed, so a failure to make one
+// no longer stands.
+func (q *Queries) ClearServerBackupRemints(ctx context.Context, arg ClearServerBackupRemintsParams) error {
+	_, err := q.db.Exec(ctx, clearServerBackupRemints, arg.WorkspaceID, arg.ServerID)
+	return err
+}
+
 const currentBackupStorageKey = `-- name: CurrentBackupStorageKey :one
 SELECT id,holder_server_id,access_key_id,encrypted_secret FROM backup_storage_keys
 WHERE workspace_id = $1 AND destination_id = $2 AND purpose = 'server' AND state = 'active'

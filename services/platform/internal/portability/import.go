@@ -80,8 +80,12 @@ func decodeArchiveMode(raw []byte, recovery bool) (Archive, error) {
 			}
 			switch table.Name {
 			case "backup_policies":
-				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil {
+				if _, e = backup.ParseReceipts(row["snapshot_receipts"]); e != nil || checkPolicyStatus(row["status"]) != nil {
 					return archive, ErrArchive
+				}
+			case "backup_storage_keys":
+				if e = checkKeyInstalls(row["installs"]); e != nil {
+					return archive, e
 				}
 			case "backup_recoveries":
 				if e = checkRecoveryResult(row); e != nil {

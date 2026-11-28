@@ -85,3 +85,63 @@ func TestOlderArchivesImportAccountsRotatingEvery90Days(t *testing.T) {
 		t.Fatalf("key_rotation_days = %d, %v", days, err)
 	}
 }
+
+// The key sweep reads every workspace's key installs and reported policy generations in one
+// statement, so an archive is refused unless its installs are the list activation writes and each
+// policy's reported generation is a counter.
+func TestImportsRefuseInstallsAndGenerationsTheSweepCantRead(t *testing.T) {
+	raw, err := os.ReadFile("testdata/workspace-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := decodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := func(name string) Row {
+		r := Row{}
+		i := slices.IndexFunc(tables, func(t table) bool { return t.Name == name })
+		for column := range strings.SplitSeq(tables[i].Columns, ",") {
+			setValue(r, column, nil)
+		}
+		setValue(r, "id", uuid.New())
+		setValue(r, "workspace_id", a.Workspace)
+		return r
+	}
+	key, policy := row("backup_storage_keys"), row("backup_policies")
+	setValue(policy, "snapshot_receipts", map[string]any{})
+	a.Tables["backup_storage_keys"], a.Tables["backup_policies"] = []Row{key}, []Row{policy}
+	a.Version = ArchiveVersion
+	decodes := func() bool {
+		raw, _ := stablejson.Marshal(a)
+		_, err := decodeArchive(raw)
+		return err == nil
+	}
+	installs := []any{map[string]any{"policy": uuid.New(), "generation": 3}}
+	setValue(key, "installs", installs)
+	setValue(policy, "status", map[string]any{"generation": 2, "enabled": true})
+	if !decodes() {
+		t.Fatal("a well-formed key and policy were refused")
+	}
+	for _, bad := range []any{
+		nil,
+		map[string]any{"policy": uuid.New(), "generation": 3},
+		[]any{map[string]any{"policy": "x", "generation": 3}},
+		[]any{map[string]any{"policy": uuid.New(), "generation": 1.5}},
+		[]any{map[string]any{"policy": uuid.New(), "generation": "3"}},
+		[]any{map[string]any{"policy": uuid.New()}},
+		[]any{map[string]any{"policy": uuid.New(), "generation": 3, "key": "x"}},
+	} {
+		setValue(key, "installs", bad)
+		if decodes() {
+			t.Errorf("installs %v were accepted", bad)
+		}
+	}
+	setValue(key, "installs", installs)
+	for _, bad := range []any{"x", 1.5, -1} {
+		setValue(policy, "status", map[string]any{"generation": bad})
+		if decodes() {
+			t.Errorf("a reported generation of %v was accepted", bad)
+		}
+	}
+}

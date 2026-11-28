@@ -308,3 +308,21 @@ func TestARotationFailureClearsOnceNoKeyIsNeeded(t *testing.T) {
 		t.Fatalf("with no key needed, the keys are %+v", keys)
 	}
 }
+
+// Revoking a server clears its destinations' failures to make a new key, since none is made for it
+// until it is renewed.
+func TestRevokingAServerClearsItsRotationFailure(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	k.aws.Fail("CreateAccessKey", "AccessDenied")
+	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/rotate", nil, 204, nil)
+	k.run(t, keySweep{})
+	waitFor(t, "the failed rotation recorded no error", 30*time.Second, func() bool {
+		return k.destinations()[d.Id].RemintError != nil
+	})
+	k.b.call("POST", k.base+"/servers/"+k.first.server.String()+"/revoke", nil, 204, nil)
+	if view := k.destinations()[d.Id]; view.RemintError != nil {
+		t.Fatalf("after the server's revocation, the destination shows %q", *view.RemintError)
+	}
+}

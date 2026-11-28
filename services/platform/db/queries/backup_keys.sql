@@ -241,6 +241,12 @@ WHERE workspace_id = @workspace_id AND id = @id;
 UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
 WHERE workspace_id = @workspace_id AND id = @id;
 
+-- name: ClearServerBackupRemints :exec
+-- A revoked server's destinations need no new key until it is renewed, so a failure to make one
+-- no longer stands.
+UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
+WHERE workspace_id = @workspace_id AND server_id = @server_id AND account_id IS NOT NULL;
+
 -- name: RetryBackupRemint :exec
 -- The owner's retry starts a failing re-mint on the next pass.
 UPDATE backup_destinations SET remint_next_at=NULL

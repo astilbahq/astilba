@@ -112,3 +112,41 @@ func checkRecoveryResult(row Row) error {
 	_, err = backup.ParseRecoveryResult(row["result"], ids["policy_id"], ids["environment_id"], snapshot, ids["target_volume_id"])
 	return err
 }
+
+// checkKeyInstalls refuses a storage key's installs unless they are the list activation writes:
+// each a policy and the generation whose install carries the key. The key sweep reads every
+// workspace's installs in one statement, so one malformed list would stop it everywhere.
+func checkKeyInstalls(raw jsontext.Value) error {
+	var installs []struct {
+		Policy     uuid.UUID `json:"policy"`
+		Generation int64     `json:"generation"`
+	}
+	if json.Unmarshal(raw, &installs, json.RejectUnknownMembers(true)) != nil || installs == nil {
+		return ErrArchive
+	}
+	for _, i := range installs {
+		if i.Policy == uuid.Nil || i.Generation < 1 || i.Generation > MaxCounter {
+			return ErrArchive
+		}
+	}
+	return nil
+}
+
+// checkPolicyStatus refuses a backup policy status whose generation isn't a counter, since the key
+// sweep and installs compare every workspace's reported generations in one statement.
+func checkPolicyStatus(raw jsontext.Value) error {
+	var status struct {
+		Generation *jsontext.Value `json:"generation"`
+	}
+	// Only an object has a generation to read.
+	if raw.Kind() != '{' {
+		return nil
+	} else if json.Unmarshal(raw, &status) != nil {
+		return ErrArchive
+	}
+	var generation *int64
+	if status.Generation != nil && (json.Unmarshal(*status.Generation, &generation) != nil || generation != nil && (*generation < 0 || *generation > MaxCounter)) {
+		return ErrArchive
+	}
+	return nil
+}

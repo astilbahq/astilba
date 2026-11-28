@@ -537,7 +537,7 @@ export default interface Resources {
         "server": "Server key"
       },
       "revoke": "Revoke key",
-      "revokeCurrent": "Management revokes the key at AWS. If it was the server’s only key in use, management then makes it a new one, and the server’s backups can fail until it has installed it.",
+      "revokeCurrent": "Management revokes the key at AWS, and makes the server a new one if it has no other key in use. The server’s backups can fail until it has installed a key that isn’t revoked, such as one from a rotation under way.",
       "revokeHandedOver": "This key was handed over to a workspace transfer. Revoking it breaks the transferred server’s backups, which can then no longer reach this bucket.",
       "revokeRecovery": "The restore using it can no longer read its snapshot. Management revokes it itself once the restore ends.",
       "revokeTitle": "Revoke this key?",

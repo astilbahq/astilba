@@ -114,8 +114,10 @@ func (s *Service) startRemint(ctx context.Context, ws, destination uuid.UUID) (u
 		if d.ServerID == nil || d.AccountID == nil {
 			return errNoRemint
 		}
-		if revoked, err := serverRevoked(ctx, tx, ws, *d.ServerID); err != nil || revoked {
-			return errors.Join(err, errNoRemint)
+		if revoked, err := serverRevoked(ctx, tx, ws, *d.ServerID); err != nil {
+			return err
+		} else if revoked {
+			return errNoRemint
 		}
 		state, err := q.BackupDestinationKeyState(ctx, db.BackupDestinationKeyStateParams{WorkspaceID: ws, ID: destination})
 		if err != nil {

@@ -202,7 +202,7 @@ export const TurnOffKeyRotation: Story = {
     await expect(
       await account.findByText("Off. Keys stay in use until you rotate them."),
     ).toBeVisible();
-    // The destinations no longer say when their keys are replaced, and the choice keeps focus.
+    // The destinations no longer say when their keys are replaced, and the choice stays made.
     await waitFor(() =>
       expect(
         canvas.queryByText(/^The key was due to be replaced on /),
@@ -214,7 +214,7 @@ export const TurnOffKeyRotation: Story = {
   },
 };
 
-// A period saved from the keyboard keeps focus in its field, and the destinations follow it.
+// A period saved from the keyboard keeps focus in its field, which shows the saved period.
 export const ShortenKeyRotation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
