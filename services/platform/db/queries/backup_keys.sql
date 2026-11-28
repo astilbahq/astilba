@@ -299,3 +299,35 @@ UPDATE backup_storage_keys k SET state='revoking',next_attempt_at=clock_timestam
 FROM servers s
 WHERE k.workspace_id = @workspace_id AND k.state = 'active' AND s.workspace_id = k.workspace_id AND s.id = k.holder_server_id
     AND s.revoked AND (k.handed_over IS NULL OR k.handed_over <> s.revocations);
+
+-- name: BackupStorageAcknowledgements :many
+-- The peer installations' users the owner has acknowledged, for the accounts' views.
+SELECT account_id,id,access_key_ids,acknowledged_at FROM backup_storage_acknowledgements
+WHERE workspace_id = @workspace_id ORDER BY account_id,id LIMIT 10000;
+
+-- name: AcknowledgeBackupStorageUser :exec
+-- id is derived from the account, the user's name and its IAM user ID, so acknowledging the same
+-- user again replaces the access keys the acknowledgement covers.
+INSERT INTO backup_storage_acknowledgements(workspace_id,id,account_id,user_name,iam_user_id,access_key_ids)
+VALUES(@workspace_id,@id,@account_id,@user_name,@iam_user_id,@access_key_ids::text[])
+ON CONFLICT (workspace_id,id) DO UPDATE SET access_key_ids = EXCLUDED.access_key_ids,acknowledged_at = clock_timestamp();
+
+-- name: PruneBackupStorageAcknowledgements :exec
+-- A check that listed the account's users in full forgets the acknowledgements of users it didn't
+-- find: a user made again has another IAM user ID, and so another identity.
+DELETE FROM backup_storage_acknowledgements
+WHERE workspace_id = @workspace_id AND account_id = @account_id AND NOT (id = ANY(@found::uuid[]));
+
+-- name: UnacknowledgedPeerBackupStorageUsers :many
+-- The users each account's latest check found with its boundary and tagged with one of its peers,
+-- as the account lists them now, that no acknowledgement covers. One covers a user when it has the
+-- user's identity and holds every access key the check found on it. Management writes a peer's
+-- tag as the UUID's canonical text, so a tag in any other form isn't a peer's.
+SELECT (u.value->>'id')::uuid AS id FROM backup_storage_accounts a
+CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(a.report->'found') = 'array' THEN a.report->'found' ELSE '[]'::jsonb END) AS u(value)
+WHERE a.workspace_id = @workspace_id AND u.value->>'bounded' = 'true' AND u.value->>'id' IS NOT NULL
+    AND u.value->>'installationId' = ANY(a.peers::text[])
+    AND NOT EXISTS(SELECT 1 FROM backup_storage_acknowledgements k
+        WHERE k.workspace_id = a.workspace_id AND k.account_id = a.id AND k.id = (u.value->>'id')::uuid
+            AND ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(u.value->'accessKeyIds') = 'array' THEN u.value->'accessKeyIds' ELSE '[]'::jsonb END)) <@ k.access_key_ids)
+ORDER BY 1 LIMIT 10000;

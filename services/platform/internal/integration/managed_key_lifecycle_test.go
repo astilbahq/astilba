@@ -123,7 +123,9 @@ func TestFoundUsersShowTheirRevocationAndPeersAreLeftAlone(t *testing.T) {
 	}
 	k.b.call("POST", account+"/found-users/"+peer+"/revoke", nil, 409, nil)
 
-	k.aws.Fail("ListAccessKeys", "ServiceFailure", "ServiceFailure", "ServiceFailure")
+	// The check lists found users' access keys too, so the failures go to a call only the
+	// revocation makes.
+	k.aws.Fail("DeleteUserPolicy", "ServiceFailure", "ServiceFailure", "ServiceFailure")
 	k.b.call("POST", account+"/found-users/"+stranger+"/revoke", nil, 204, nil)
 	k.run(t, keySweep{})
 	k.run(t, accountCheck{})

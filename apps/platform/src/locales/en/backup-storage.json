@@ -21,7 +21,7 @@
     "check": "Check now",
     "checking": "Checking…",
     "peers": "Peer installations",
-    "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
+    "peersDescription": "Users these installations make in this AWS account are shown as theirs. Each raises an alert until you acknowledge it, since someone holding the admin key can make a user with a peer’s tag."
   },
   "found": {
     "title": "Users management didn’t make",
@@ -30,7 +30,14 @@
     "self": "Tagged by this installation",
     "untagged": "No installation tag",
     "server": "Tagged for server {{server}}",
-    "peer": "Made by a peer installation. Nothing needs doing.",
+    "peer": "Tagged by a peer installation, and acknowledged on {{date}}.",
+    "peerUnacknowledged": "Tagged by a peer installation. Someone holding the admin key can make a user with a peer’s tag, so it raises an alert until you acknowledge it.",
+    "accessKeys": "Access keys: {{keys}}",
+    "noAccessKeys": "No access keys",
+    "acknowledge": "Acknowledge user",
+    "acknowledgeTitle": "Acknowledge {{name}} as installation {{installation}}’s?",
+    "acknowledgeDescription": "Acknowledge it only if that installation made it, for example a server this workspace was transferred to. Management then shows it without an alert, and never revokes it. A user made again under this name, or given an access key other than {{keys}}, raises the alert again.",
+    "acknowledgeConfirm": "Acknowledge",
     "unbounded": "It has no permissions boundary, so the admin key can’t revoke it. Delete it in the AWS console.",
     "revoking": "Management is revoking it.",
     "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",
@@ -39,7 +46,7 @@
     "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
     "addPeer": "Add installation as a peer",
     "addPeerTitle": "Add installation {{installation}} as a peer?",
-    "addPeerDescription": "Users it makes in this AWS account are then shown as its, with no alert, and management never revokes them. Add only an installation this workspace was transferred to or from.",
+    "addPeerDescription": "Users it makes in this AWS account are then shown as its, and management never revokes them. Each raises an alert until you acknowledge it by name. Add only an installation this workspace was transferred to or from.",
     "addPeerConfirm": "Add peer"
   },
   "credential": {

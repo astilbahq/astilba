@@ -68,3 +68,35 @@ func (s *Service) backupAccount(ctx context.Context, tx pgx.Tx, ws uuid.UUID) er
 	}
 	return nil
 }
+
+// backupPeerUsers raises backup_peer_user for each user an account check found tagged with one of
+// the account's peers, until the owner acknowledges it by name. A leaked admin key can make a user
+// with a peer's tag, which the peer's own check doesn't see once that installation no longer
+// checks the account, so each one is shown here once, as its own alert, however earlier ones were
+// handled. Its resource is the user's identity: an acknowledgement, or the user being gone,
+// establishes recovery, and a user made again under the name, or given another access key,
+// raises it again.
+func (s *Service) backupPeerUsers(ctx context.Context, tx pgx.Tx, ws uuid.UUID) error {
+	q := db.New(tx)
+	pending, err := q.UnacknowledgedPeerBackupStorageUsers(ctx, ws)
+	if err != nil {
+		return err
+	}
+	firing, err := q.FiringAlertResources(ctx, db.FiringAlertResourcesParams{WorkspaceID: ws, Kind: string(api.BackupPeerUser)})
+	if err != nil {
+		return err
+	}
+	for _, user := range pending {
+		if err = s.condition(ctx, tx, ws, api.BackupPeerUser, target{resource: user}, bad); err != nil {
+			return err
+		}
+	}
+	for _, user := range firing {
+		if !slices.Contains(pending, user) {
+			if err = s.condition(ctx, tx, ws, api.BackupPeerUser, target{resource: user}, good); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

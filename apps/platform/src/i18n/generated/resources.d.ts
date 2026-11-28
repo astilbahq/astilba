@@ -434,7 +434,7 @@ export default interface Resources {
       "notChecked": "Not checked yet.",
       "path": "IAM path of the users management makes",
       "peers": "Peer installations",
-      "peersDescription": "Users these installations make in this AWS account are shown as theirs, with no alert."
+      "peersDescription": "Users these installations make in this AWS account are shown as theirs. Each raises an alert until you acknowledge it, since someone holding the admin key can make a user with a peer’s tag."
     },
     "add": {
       "added": "Storage account {{name}} added.",
@@ -487,13 +487,20 @@ export default interface Resources {
       "userMissing": "Its IAM user is gone at AWS."
     },
     "found": {
+      "accessKeys": "Access keys: {{keys}}",
+      "acknowledge": "Acknowledge user",
+      "acknowledgeConfirm": "Acknowledge",
+      "acknowledgeDescription": "Acknowledge it only if that installation made it, for example a server this workspace was transferred to. Management then shows it without an alert, and never revokes it. A user made again under this name, or given an access key other than {{keys}}, raises the alert again.",
+      "acknowledgeTitle": "Acknowledge {{name}} as installation {{installation}}’s?",
       "addPeer": "Add installation as a peer",
       "addPeerConfirm": "Add peer",
-      "addPeerDescription": "Users it makes in this AWS account are then shown as its, with no alert, and management never revokes them. Add only an installation this workspace was transferred to or from.",
+      "addPeerDescription": "Users it makes in this AWS account are then shown as its, and management never revokes them. Each raises an alert until you acknowledge it by name. Add only an installation this workspace was transferred to or from.",
       "addPeerTitle": "Add installation {{installation}} as a peer?",
       "description": "The latest check found these IAM users under this workspace’s path with no record here. One may have been restored from an older management backup, made by another installation, or made with a leaked admin key.",
       "installation": "Tagged by installation {{installation}}",
-      "peer": "Made by a peer installation. Nothing needs doing.",
+      "noAccessKeys": "No access keys",
+      "peer": "Tagged by a peer installation, and acknowledged on {{date}}.",
+      "peerUnacknowledged": "Tagged by a peer installation. Someone holding the admin key can make a user with a peer’s tag, so it raises an alert until you acknowledge it.",
       "revoke": "Revoke user",
       "revokeDescription": "Management takes away the user’s access and deletes it at AWS. Anything using its key, such as another installation’s backups, stops working. This can’t be undone.",
       "revokeFailing": "Management is revoking it, and its last attempt failed: {{reason}}",

@@ -2,8 +2,8 @@ package execution
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
+	"slices"
 	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
@@ -87,24 +87,22 @@ func (s *Service) checkAccount(ctx context.Context, ws, id uuid.UUID) error {
 	}
 	return s.Store.WorkspaceWriteTransaction(context.WithoutCancel(ctx), ws, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		report := accountReport{}
 		code := pgtype.Text{}
+		raw := account.Report
 		if checkErr != nil {
-			// A failed check keeps what the last one found.
+			// A failed check keeps what the last one found, as it was written.
 			code = fixedText(errorCode(checkErr))
-			if len(account.Report) > 0 {
-				if err := json.Unmarshal(account.Report, &report); err != nil {
-					return err
-				}
+			if len(raw) == 0 {
+				raw = []byte("{}")
 			}
 		} else {
-			if report, err = s.settleAccount(ctx, tx, account, result); err != nil {
+			report, err := s.settleAccount(ctx, tx, account, result)
+			if err != nil {
 				return err
 			}
-		}
-		raw, err := stablejson.Marshal(report)
-		if err != nil {
-			return err
+			if raw, err = stablejson.Marshal(report); err != nil {
+				return err
+			}
 		}
 		return q.RecordBackupStorageAccountCheck(ctx, db.RecordBackupStorageAccountCheckParams{WorkspaceID: ws, ID: id, Generation: account.Generation, CheckError: code, Report: raw})
 	})
@@ -132,11 +130,14 @@ type accountListing struct {
 	keys      []db.AccountBackupStorageKeysRow
 	extra     int
 	missing   map[string]bool // known active users that IAM confirmed gone
+	// found are the access keys of each user with the boundary that management has no row for,
+	// which an acknowledgement of a peer's user covers.
+	found map[string][]string
 }
 
 func (s *Service) listAccount(ctx context.Context, account db.BackupStorageAccountRow) (accountListing, error) {
 	ws := account.WorkspaceID
-	l := accountListing{began: time.Now(), missing: map[string]bool{}}
+	l := accountListing{began: time.Now(), missing: map[string]bool{}, found: map[string][]string{}}
 	var err error
 	if l.installed, err = s.Store.Queries.InstallationID(ctx); err != nil {
 		return l, err
@@ -201,6 +202,24 @@ func (s *Service) listAccount(ctx context.Context, account db.BackupStorageAccou
 			l.extra++
 		}
 	}
+	// Any found user can belong to a peer, now or once its installation is added. An
+	// acknowledgement covers the keys it has, so one given another raises the alert again. A
+	// user without the boundary can't be acknowledged.
+	known := map[string]bool{}
+	for _, k := range l.keys {
+		known[k.UserName] = true
+	}
+	for _, u := range l.users {
+		if known[u.Name] || u.Boundary != account.Boundary {
+			continue
+		}
+		ids, err := s.AWS.AccessKeys(ctx, admin, u.Name)
+		if err != nil {
+			return l, err
+		}
+		slices.Sort(ids)
+		l.found[u.Name] = ids
+	}
 	return l, nil
 }
 
@@ -230,6 +249,7 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 		}
 	}
 	latched := false
+	foundIDs := []uuid.UUID{}
 	for _, u := range l.users {
 		if k, ok := known[u.Name]; ok {
 			// A user recorded revoked over an hour ago that IAM still lists is revoked again.
@@ -242,8 +262,12 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			}
 			continue
 		}
-		found := api.BackupStorageFoundUser{UserName: u.Name, InstallationId: u.Tags["astilba:installation"], ServerId: u.Tags["astilba:server"], Bounded: u.Boundary == account.Boundary}
+		found := api.BackupStorageFoundUser{Id: foundUserID(account.ID, u.Name, u.ID), UserName: u.Name, UserId: u.ID, AccessKeyIds: []string{}, InstallationId: u.Tags["astilba:installation"], ServerId: u.Tags["astilba:server"], Bounded: u.Boundary == account.Boundary}
+		if ids := l.found[u.Name]; found.Bounded && ids != nil {
+			found.AccessKeyIds = ids
+		}
 		found.Peer = isPeer(found.InstallationId, account.Peers)
+		foundIDs = append(foundIDs, found.Id)
 		switch {
 		case !found.Bounded:
 			// A user without the boundary isn't confined to backups, whatever its tags say.
@@ -258,10 +282,18 @@ func (s *Service) settleAccount(ctx context.Context, tx pgx.Tx, account db.Backu
 			}
 			found.Revoking, latched = true, true
 		case found.Peer:
+			// A peer's user raises backup_peer_user until the owner acknowledges it.
 		default:
 			report.Alert = true
 		}
 		report.Found = append(report.Found, found)
+	}
+	// A listing in full shows which acknowledged users are gone. One cut short may leave out
+	// users that are still there, whose acknowledgements stay.
+	if !l.truncated {
+		if err := q.PruneBackupStorageAcknowledgements(ctx, db.PruneBackupStorageAcknowledgementsParams{WorkspaceID: ws, AccountID: account.ID, Found: foundIDs}); err != nil {
+			return report, err
+		}
 	}
 	if latched || len(l.missing) > 0 {
 		return report, s.queueKeySweep(ctx, tx)

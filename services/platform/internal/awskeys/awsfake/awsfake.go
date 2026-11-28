@@ -70,7 +70,8 @@ func (a *AWS) ReportMissingUsers(report bool) {
 }
 
 type user struct {
-	name, path, boundary, account string
+	// id is the user's IAM user ID: a user made again under the same name gets another.
+	id, name, path, boundary, account string
 	tags                          map[string]string
 	policies                      map[string]string
 	created                       time.Time
@@ -95,7 +96,7 @@ type Credential struct{ AccessKeyID, SecretAccessKey, SessionToken string }
 func (a *AWS) AddAdmin(admin Admin) Credential {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.users[admin.Name] = &user{name: admin.Name, path: admin.Path, account: admin.Account, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
+	a.users[admin.Name] = &user{id: a.userID(), name: admin.Name, path: admin.Path, account: admin.Account, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
 	k := a.issue(admin.Name)
 	a.admins[admin.Name] = admin
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
@@ -206,7 +207,7 @@ func (a *AWS) PutObject(bucket, name string, content []byte) {
 func (a *AWS) CreateUser(name, userPath, boundary string, tags map[string]string, policy string) Credential {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.users[name] = &user{name: name, path: userPath, boundary: boundary, tags: maps.Clone(tags), policies: map[string]string{}, created: time.Now()}
+	a.users[name] = &user{id: a.userID(), name: name, path: userPath, boundary: boundary, tags: maps.Clone(tags), policies: map[string]string{}, created: time.Now()}
 	if policy != "" {
 		a.users[name].policies["policy"] = policy
 	}
@@ -220,6 +221,13 @@ func (a *AWS) IssueKey(name string) Credential {
 	defer a.mu.Unlock()
 	k := a.issue(name)
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
+}
+
+// DeleteKey deletes an access key directly, as someone with IAM rights could.
+func (a *AWS) DeleteKey(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.keys, id)
 }
 
 // MoveUser moves a user to another path, as someone with IAM rights wider than the admin policy's
@@ -240,6 +248,22 @@ func (a *AWS) DeleteUser(name string) {
 			delete(a.keys, id)
 		}
 	}
+}
+
+// UserID is a user's IAM user ID, or "".
+func (a *AWS) UserID(name string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if u := a.users[name]; u != nil {
+		return u.id
+	}
+	return ""
+}
+
+// userID is a new IAM user ID. The caller holds the lock.
+func (a *AWS) userID() string {
+	a.serial++
+	return fmt.Sprintf("AIDAFAKE%012d", a.serial)
 }
 
 func (a *AWS) issue(name string) *key {

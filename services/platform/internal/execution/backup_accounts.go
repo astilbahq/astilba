@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"time"
 
 	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
@@ -31,6 +32,9 @@ var (
 	errFoundPeer           = &domain.Error{Code: "conflict", Message: "This user belongs to a peer installation, which may still use its key. Revoke it from that installation."}
 	errPeerLimit           = &domain.Error{Code: "conflict", Message: "A storage account lists at most 16 peer installations."}
 	errFoundUnbounded      = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so the storage account's admin policy can't change it. Delete it in the AWS console."}
+	errAcknowledgeUnbounded = &domain.Error{Code: "conflict", Message: "This user has no permissions boundary, so it isn't confined to backups, whoever made it. Delete it in the AWS console."}
+	errAcknowledgeNotPeer   = &domain.Error{Code: "conflict", Message: "Only a peer installation's user can be acknowledged. Add its installation as a peer if this workspace was transferred to or from it, or revoke the user."}
+	errFoundChanged         = &domain.Error{Code: "conflict", Message: "The latest check found this user with another IAM user ID or other access keys than you reviewed. Review it again."}
 	errProviderUnavailable = &domain.Error{Code: "provider_unavailable", Message: "AWS could not be reached or failed. Try again shortly."}
 )
 
@@ -231,8 +235,12 @@ func (s *Service) BackupStorageAccounts(ctx context.Context, p store.Principal, 
 		if err != nil {
 			return err
 		}
+		acks, err := q.BackupStorageAcknowledgements(ctx, ws)
+		if err != nil {
+			return err
+		}
 		for _, row := range rows {
-			v, err := accountView(ws, installation, row, revoking)
+			v, err := accountView(ws, installation, row, revoking, acks)
 			if err != nil {
 				return err
 			}
@@ -265,15 +273,46 @@ type accountReport struct {
 }
 
 // isPeer reports whether a found user's installation tag names one of the account's peers.
+// Management tags users with an installation's canonical UUID text, so a tag in any other form
+// isn't a peer's, as UnacknowledgedPeerBackupStorageUsers also reads it.
 func isPeer(installation string, peers []uuid.UUID) bool {
 	id, err := uuid.Parse(installation)
-	return err == nil && slices.Contains(peers, id)
+	return err == nil && id.String() == installation && slices.Contains(peers, id)
+}
+
+// foundUserID is a found user's identity under an account: its name and IAM user ID, which IAM
+// gives each user it creates, so a user made again under the same name has another. An
+// acknowledgement is of one identity, and a backup_peer_user alert names it.
+func foundUserID(account uuid.UUID, name, iamUserID string) uuid.UUID {
+	return uuid.NewSHA1(account, []byte("iam-user\x00"+name+"\x00"+iamUserID))
+}
+
+// acknowledgement is the time an acknowledgement covering a found user was made, or nil: one of
+// its identity that holds every access key the check found on it. Only a bounded peer's user is
+// acknowledged, as UnacknowledgedPeerBackupStorageUsers reads it.
+func acknowledgement(account uuid.UUID, u api.BackupStorageFoundUser, acks []db.BackupStorageAcknowledgementsRow) *time.Time {
+	if !u.Peer || !u.Bounded {
+		return nil
+	}
+	for _, a := range acks {
+		if a.AccountID != account || a.ID != u.Id {
+			continue
+		}
+		for _, k := range u.AccessKeyIds {
+			if !slices.Contains(a.AccessKeyIds, k) {
+				return nil
+			}
+		}
+		at := a.AcknowledgedAt
+		return &at
+	}
+	return nil
 }
 
 // accountView is an account as its latest check found it, with the found users management is
 // still revoking, which a check no longer reports once their rows make them known, and why each
 // revocation last failed.
-func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow, revoking []db.RevokingFoundBackupStorageKeysRow) (api.BackupStorageAccount, error) {
+func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow, revoking []db.RevokingFoundBackupStorageKeysRow, acks []db.BackupStorageAcknowledgementsRow) (api.BackupStorageAccount, error) {
 	var report accountReport
 	if len(row.Report) > 0 {
 		if err := json.Unmarshal(row.Report, &report); err != nil {
@@ -302,6 +341,10 @@ func accountView(ws, installation uuid.UUID, row db.ListBackupStorageAccountsRow
 	// A peer added since the check is shown as one at once, as revoking its users is refused.
 	for i := range report.Found {
 		report.Found[i].Peer = isPeer(report.Found[i].InstallationId, row.Peers)
+		report.Found[i].AcknowledgedAt = acknowledgement(row.ID, report.Found[i], acks)
+		if report.Found[i].AccessKeyIds == nil {
+			report.Found[i].AccessKeyIds = []string{}
+		}
 	}
 	peers := slices.Clone(row.Peers)
 	if peers == nil {
@@ -395,6 +438,47 @@ func (s *Service) RevokeFoundBackupStorageUser(ctx context.Context, p store.Prin
 		// The account shows the user as revoking from its row. A check now finds the user known,
 		// so the alert it raised clears without waiting a day.
 		return errors.Join(q.RequestBackupStorageAccountCheck(ctx, db.RequestBackupStorageAccountCheckParams{WorkspaceID: ws, ID: account}), s.queueKeySweep(ctx, tx), s.queueAccountCheck(ctx, tx))
+	})
+}
+
+// AcknowledgeFoundBackupStorageUser records that a user the account check found tagged with one
+// of the account's peers is that installation's, which clears the backup_peer_user alert it
+// raised. The owner names the user and what they reviewed of it: its IAM user ID and access keys,
+// which must be what the latest check found. The acknowledgement covers that identity and those
+// keys alone, so a user made again under the name, or given another key, raises the alert again.
+func (s *Service) AcknowledgeFoundBackupStorageUser(ctx context.Context, p store.Principal, ws, account uuid.UUID, user string, in api.BackupStorageAcknowledgementRequest) error {
+	id := foundUserID(account, user, in.UserId)
+	return s.scope(ctx, p, ws, ownerSettings, "backup.key.acknowledge", id, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		rows, err := q.ListBackupStorageAccounts(ctx, ws)
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(rows, func(r db.ListBackupStorageAccountsRow) bool { return r.ID == account })
+		if i < 0 {
+			return domain.NotFound
+		}
+		var report accountReport
+		if len(rows[i].Report) > 0 && json.Unmarshal(rows[i].Report, &report) != nil {
+			return domain.Conflict
+		}
+		j := slices.IndexFunc(report.Found, func(f api.BackupStorageFoundUser) bool { return f.UserName == user })
+		if j < 0 || strings.TrimSpace(user) == "" {
+			return domain.NotFound
+		}
+		found := report.Found[j]
+		if !found.Bounded {
+			return errAcknowledgeUnbounded
+		}
+		// The account's peers are read as they are now, as the alert reads them.
+		if !isPeer(found.InstallationId, rows[i].Peers) {
+			return errAcknowledgeNotPeer
+		}
+		reviewed := slices.Sorted(slices.Values(in.AccessKeyIds))
+		if found.Id != id || found.UserId != in.UserId || !slices.Equal(slices.Sorted(slices.Values(found.AccessKeyIds)), slices.Compact(reviewed)) {
+			return errFoundChanged
+		}
+		return q.AcknowledgeBackupStorageUser(ctx, db.AcknowledgeBackupStorageUserParams{WorkspaceID: ws, ID: id, AccountID: account, UserName: user, IamUserID: in.UserId, AccessKeyIds: slices.Compact(reviewed)})
 	})
 }
 

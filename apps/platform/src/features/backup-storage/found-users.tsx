@@ -14,9 +14,11 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The IAM users the latest account check found under the workspace's path with no record here,
- * and those management is revoking. A peer installation's need nothing; the admin key can revoke
- * any other with the boundary, and a user without it is left to the AWS console. A user tagged by
- * another installation can make that installation a peer, after a workspace transfer.
+ * and those management is revoking. A peer installation's user raises an alert until the owner
+ * acknowledges it by name, since a leaked admin key can make one with the peer's tag; the admin
+ * key can revoke any other with the boundary, and a user without it is left to the AWS console. A
+ * user tagged by another installation can make that installation a peer, after a workspace
+ * transfer.
  */
 export function FoundUsers({
   workspaceId,
@@ -102,6 +104,15 @@ function FoundUserItem({
           </>
         )}
       </p>
+      {user.bounded && (
+        <p className={s.muted}>
+          {user.accessKeyIds.length
+            ? t(($) => $.found.accessKeys, {
+                keys: user.accessKeyIds.join(", "),
+              })
+            : t(($) => $.found.noAccessKeys)}
+        </p>
+      )}
       {revoking ? (
         // Management keeps trying, and says why the last attempt failed.
         user.lastError ? (
@@ -113,8 +124,16 @@ function FoundUserItem({
         ) : (
           <p>{t(($) => $.found.revoking)}</p>
         )
-      ) : peer ? (
-        <p>{t(($) => $.found.peer)}</p>
+      ) : peer && user.bounded ? (
+        user.acknowledgedAt ? (
+          <p>
+            {t(($) => $.found.peer, {
+              date: text.date(user.acknowledgedAt),
+            })}
+          </p>
+        ) : (
+          <p className={s.notice}>{t(($) => $.found.peerUnacknowledged)}</p>
+        )
       ) : (
         !user.bounded && (
           <p className={s.notice}>{t(($) => $.found.unbounded)}</p>
@@ -132,6 +151,41 @@ function FoundUserItem({
               client.POST(
                 `${backupStorageAccountPath}/found-users/{userName}/revoke`,
                 { params: { path: { ...path, userName: user.userName } } },
+              ),
+            );
+            await refresh();
+          }}
+        />
+      )}
+      {owner && peer && user.bounded && (
+        // The acknowledgement covers this user as shown: management refuses it if the latest
+        // check found another IAM user under the name, or other access keys.
+        <ConfirmAction
+          available={!user.acknowledgedAt}
+          focusAfter={item}
+          danger={false}
+          label={t(($) => $.found.acknowledge)}
+          title={t(($) => $.found.acknowledgeTitle, {
+            name: user.userName,
+            installation: user.installationId,
+          })}
+          description={t(($) => $.found.acknowledgeDescription, {
+            keys: user.accessKeyIds.length
+              ? user.accessKeyIds.join(", ")
+              : t(($) => $.found.noAccessKeys),
+          })}
+          confirm={t(($) => $.found.acknowledgeConfirm)}
+          run={async () => {
+            await result(
+              client.POST(
+                `${backupStorageAccountPath}/found-users/{userName}/acknowledge`,
+                {
+                  params: { path: { ...path, userName: user.userName } },
+                  body: {
+                    userId: user.userId,
+                    accessKeyIds: user.accessKeyIds,
+                  },
+                },
               ),
             );
             await refresh();

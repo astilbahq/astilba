@@ -47,39 +47,69 @@ export const account: Schema["BackupStorageAccount"] = {
   checkError: "access_denied",
   foundUsers: [
     {
+      id: id(0xd01),
       userName: "astilba-6f2c0d1e-91a4-4b7e-a5c3-0e8d2f7b1c49",
+      userId: "AIDAEXAMPLE000000001",
+      accessKeyIds: ["AKIAEXAMPLE000000001"],
       installationId: otherInstallation,
       serverId: id(0xc01),
       bounded: true,
       peer: false,
+      acknowledgedAt: null,
       revoking: false,
       lastError: null,
     },
     {
+      // A peer's user the owner hasn't acknowledged yet, which raises an alert.
+      id: id(0xd02),
       userName: "astilba-3b9e7a21-5c48-4d0f-b6e2-9a1c7f3d8e05",
+      userId: "AIDAEXAMPLE000000002",
+      accessKeyIds: ["AKIAEXAMPLE000000002"],
       installationId: peerInstallation,
       serverId: id(0xc02),
       bounded: true,
       peer: true,
+      acknowledgedAt: null,
       revoking: false,
       lastError: null,
     },
     {
+      id: id(0xd03),
+      userName: "astilba-1a7f3e90-2b6c-4d18-9e05-7c3b8a1f4d62",
+      userId: "AIDAEXAMPLE000000003",
+      accessKeyIds: ["AKIAEXAMPLE000000003"],
+      installationId: peerInstallation,
+      serverId: id(0xc03),
+      bounded: true,
+      peer: true,
+      acknowledgedAt: "2026-11-18T10:00:00Z",
+      revoking: false,
+      lastError: null,
+    },
+    {
+      id: id(0xd04),
       userName: "backup-writer",
+      userId: "AIDAEXAMPLE000000004",
+      accessKeyIds: [],
       installationId: "",
       serverId: "",
       bounded: false,
       peer: false,
+      acknowledgedAt: null,
       revoking: false,
       lastError: null,
     },
     {
       // Management is revoking it, and AWS won't delete it while something else is attached.
+      id: id(0xd05),
       userName: "astilba-8d4a2c17-6e0b-4f93-a1d5-3c7e9b2f6a80",
+      userId: "AIDAEXAMPLE000000005",
+      accessKeyIds: [],
       installationId: installation,
       serverId: retired,
       bounded: true,
       peer: false,
+      acknowledgedAt: null,
       revoking: true,
       lastError: "delete_conflict",
     },
@@ -149,6 +179,12 @@ const destination = (
 const revokedKeys = new Set<string>();
 const addedPeers = new Set<string>();
 const revokedUsers = new Set<string>();
+// The bodies of the acknowledgements an owner made in a story, by user name.
+const acknowledged = new Map<
+  string,
+  Schema["BackupStorageAcknowledgementRequest"]
+>();
+export const acknowledgement = (userName: string) => acknowledged.get(userName);
 // The body of the latest admin key replacement, which names no boundary.
 let replacement: Record<string, unknown> | undefined;
 export const lastReplacement = () => replacement;
@@ -156,6 +192,7 @@ export function resetBackupStorage() {
   revokedKeys.clear();
   addedPeers.clear();
   revokedUsers.clear();
+  acknowledged.clear();
   replacement = undefined;
 }
 
@@ -185,6 +222,9 @@ export function backupStorageHandlers({
                 ...u,
                 peer: u.peer || addedPeers.has(u.installationId),
                 revoking: u.revoking || revokedUsers.has(u.userName),
+                acknowledgedAt: acknowledged.has(u.userName)
+                  ? "2026-11-21T09:00:00Z"
+                  : u.acknowledgedAt,
               })),
             })),
           ),
@@ -239,6 +279,16 @@ export function backupStorageHandlers({
       revokedUsers.add(String(params.userName));
       return new HttpResponse(null, { status: 204 });
     }),
+    http.post(
+      `${accountPath}/found-users/:userName/acknowledge`,
+      async ({ params, request }) => {
+        acknowledged.set(
+          String(params.userName),
+          (await request.json()) as Schema["BackupStorageAcknowledgementRequest"],
+        );
+        return new HttpResponse(null, { status: 204 });
+      },
+    ),
     http.post(`${workspaceRoot}/backup-storage-accounts`, () =>
       workshopFailure(
         "invalid_input",

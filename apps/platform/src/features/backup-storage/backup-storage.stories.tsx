@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ShellPreview, session, workspace } from "../../workshop/app-preview";
 import {
   account,
+  acknowledgement,
   backupStorageHandlers,
   lastReplacement,
   otherInstallation,
@@ -40,10 +41,17 @@ export const Accounts: Story = {
       view.getByText(/^The latest check failed: AWS refused the request\./),
     ).toBeVisible();
     await expect(view.getByText(/found 1 access key/)).toBeVisible();
-    // A peer's user needs nothing, and one without the boundary is left to the AWS console.
+    // A peer's user raises an alert until it is acknowledged, and one without the boundary is left
+    // to the AWS console.
     await expect(
-      view.getByText("Made by a peer installation. Nothing needs doing."),
+      view.getByText(/^Tagged by a peer installation, and acknowledged on /),
     ).toBeVisible();
+    await expect(
+      view.getByText(/^Tagged by a peer installation\. Someone holding/),
+    ).toBeVisible();
+    await expect(
+      view.getAllByRole("button", { name: "Acknowledge user" }),
+    ).toHaveLength(1);
     await expect(
       view.getByText(/Delete it in the AWS console\./),
     ).toBeVisible();
@@ -232,14 +240,54 @@ export const AddPeer: Story = {
     ).toBeVisible();
     await userEvent.click(dialog.getByRole("button", { name: "Add peer" }));
     await waitFor(() => expect(user).toHaveFocus());
+    // Its user is the peer's now, and raises an alert until it is acknowledged.
     await expect(
-      canvas.getAllByText("Made by a peer installation. Nothing needs doing."),
+      canvas.getAllByText(/^Tagged by a peer installation\. Someone holding/),
+    ).toHaveLength(2);
+    await expect(
+      canvas.getAllByRole("button", { name: "Acknowledge user" }),
     ).toHaveLength(2);
     await expect(
       canvas.queryByRole("button", { name: "Add installation as a peer" }),
     ).not.toBeInTheDocument();
     await expect(
       canvas.queryByRole("button", { name: "Revoke user" }),
+    ).not.toBeInTheDocument();
+  },
+};
+
+// Acknowledging a peer's user asks first, naming its access keys, and sends what the owner saw.
+export const AcknowledgePeerUser: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const acknowledge = await canvas.findByRole("button", {
+      name: "Acknowledge user",
+    });
+    const user = acknowledge.closest("li");
+    await userEvent.click(acknowledge);
+    const dialog = within(
+      await within(canvasElement.ownerDocument.body).findByRole("alertdialog"),
+    );
+    const name = "astilba-3b9e7a21-5c48-4d0f-b6e2-9a1c7f3d8e05";
+    await expect(
+      dialog.getByRole("heading", {
+        name: new RegExp(`^Acknowledge ${name} `),
+      }),
+    ).toBeVisible();
+    await expect(dialog.getByText(/AKIAEXAMPLE000000002/)).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Acknowledge" }));
+    await waitFor(() => expect(user).toHaveFocus());
+    await expect(acknowledgement(name)).toEqual({
+      userId: "AIDAEXAMPLE000000002",
+      accessKeyIds: ["AKIAEXAMPLE000000002"],
+    });
+    await expect(
+      canvas.getAllByText(
+        /^Tagged by a peer installation, and acknowledged on /,
+      ),
+    ).toHaveLength(2);
+    await expect(
+      canvas.queryByRole("button", { name: "Acknowledge user" }),
     ).not.toBeInTheDocument();
   },
 };
