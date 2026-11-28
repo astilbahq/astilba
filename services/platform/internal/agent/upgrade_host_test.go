@@ -343,8 +343,16 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						}
 					}
 				}
-				// Nor does it keep template1's settings, grants, comment or flags.
+				// Nor does it keep the settings, grants, comment or flags of template1, of template0
+				// (PLAT-572), which a superuser can open, change and close again, or of postgres (PLAT-573).
 				for _, change := range []struct{ make, undo string }{
+					{"ALTER DATABASE template0 ALLOW_CONNECTIONS true; ALTER DATABASE template0 SET work_mem = '8MB'; ALTER DATABASE template0 ALLOW_CONNECTIONS false", "ALTER DATABASE template0 RESET ALL"},
+					{"ALTER DATABASE template0 ALLOW_CONNECTIONS true", "ALTER DATABASE template0 ALLOW_CONNECTIONS false"},
+					{"GRANT CREATE ON DATABASE template0 TO PUBLIC", "REVOKE CREATE ON DATABASE template0 FROM PUBLIC"},
+					{"COMMENT ON DATABASE template0 IS 'kept'", "COMMENT ON DATABASE template0 IS 'unmodifiable empty database'"},
+					{"ALTER DATABASE template0 IS_TEMPLATE false", "ALTER DATABASE template0 IS_TEMPLATE true"},
+					{`ALTER DATABASE template0 RENAME TO "template0 kept"`, `ALTER DATABASE "template0 kept" RENAME TO template0`},
+					{"ALTER DATABASE postgres IS_TEMPLATE true", "ALTER DATABASE postgres IS_TEMPLATE false"},
 					{"ALTER DATABASE template1 SET work_mem = '8MB'", "ALTER DATABASE template1 RESET ALL"},
 					{"GRANT CREATE ON DATABASE template1 TO PUBLIC", "REVOKE CREATE ON DATABASE template1 FROM PUBLIC"},
 					// The default ACL, though initdb takes TEMPORARY from PUBLIC on template1.
@@ -357,9 +365,23 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 					if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil {
-						t.Fatalf("template1 changed by %q was accepted", change.make)
+						t.Fatalf("a maintenance database changed by %q was accepted", change.make)
 					}
 					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, admin, change.undo); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// template0 is always oid 4, so another database named template0 is an additional one.
+				for _, statement := range []string{`ALTER DATABASE template0 RENAME TO "template0 kept"`, `CREATE DATABASE template0 TEMPLATE "template0 kept"`} {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err = e.upgradeDatabaseChecks(ctx, helper, a); err == nil || !strings.Contains(err.Error(), "additional databases") {
+					t.Fatalf("a database named template0 that isn't template0 was accepted: %v", err)
+				}
+				for _, statement := range []string{"DROP DATABASE template0", `ALTER DATABASE "template0 kept" RENAME TO template0`} {
+					if _, err = e.pgQuery(ctx, pgClient{container: source.ID}, a, statement); err != nil {
 						t.Fatal(err)
 					}
 				}
