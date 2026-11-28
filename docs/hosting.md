@@ -983,7 +983,8 @@ other erased versions: it lists them as ranges of versions erased one after anot
 also erases every value of a retired secret, a purged environment and a preview that has ended. So
 recovering from a backup that still holds a retired or purged value erases it again, however old
 the backup, and the checkpoint's size follows the configuration, not the workspace's age or how
-many values were erased more than a week before it was captured. A busy workspace whose history doesn't fit
+many values were erased, apart from erased versions created in the week before it was captured,
+which it lists one by one. A busy workspace whose history doesn't fit
 gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
 with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
 window opened, which the Workspace page shows; [Recovering management from an older

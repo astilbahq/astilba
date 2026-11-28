@@ -35,7 +35,8 @@ import (
 // (eraseDerivedSecretVersions): every version of a retired secret or a purged environment, those
 // of a preview that has ended, and the erased versions of the other carried secrets, which the
 // recovery section lists as ranges (baseSecretErasures). So the base doesn't carry every erased
-// version as a row, and it doesn't grow with how many were erased more than a week before capture.
+// version as a row, and it doesn't grow with how many were erased, apart from those created in the
+// week before capture.
 //
 // Operations that changed a runtime travel as the recovery section's applied history instead
 // (RecoveryHistory), and roots and runtime changes that ended inside the window as its settled
