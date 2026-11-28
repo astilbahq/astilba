@@ -2,8 +2,8 @@ package integration
 
 import (
 	"context"
-	"encoding/json/v2"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"slices"
 	"testing"
 	"time"
@@ -241,5 +241,70 @@ func TestAFailedRotationKeepsTheOldKeyAndRetries(t *testing.T) {
 	}
 	if reply := <-k.b.send("POST", k.base+"/backup-destinations/"+uuid.NewString()+"/keys/rotate", nil); reply.status != 404 {
 		t.Fatalf("rotating an unknown destination answered %d %s", reply.status, reply.body)
+	}
+}
+
+// A policy whose environment has retired uses no key, since retirement removed its schedule from
+// the host, so it doesn't keep a rotated destination's old key active.
+func TestARotationDoesntWaitForARetiredEnvironment(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	var policy backup.Policy
+	k.b.call("POST", k.environment(k.first)+"/backup-policies", k.policy(k.first, "Managed", d.Id), 201, &policy)
+	old := d.Keys[0]
+	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/rotate", nil, 204, nil)
+	k.run(t, keySweep{})
+	k.rotated(t, d.Id, old.Id)
+	k.run(t, keySweep{})
+	if state, _ := k.keyState(t, old.Id); state != "active" {
+		t.Fatalf("before the server installed the new key, the old one is %s", state)
+	}
+
+	// The environment retires before its server installs the new key.
+	k.exec(t, `UPDATE environments SET state='retired',retired_at=now(),retired_by=(SELECT id FROM accounts ORDER BY created_at LIMIT 1)
+		WHERE id=(SELECT environment_id FROM backup_policies WHERE id=$1)`, policy.ID)
+	k.run(t, keySweep{})
+	if state, _ := k.keyState(t, old.Id); state != "revoked" {
+		t.Fatalf("after the environment retired, the old key is %s", state)
+	}
+	if reply := <-k.b.send("POST", k.base+"/backup-destinations/"+d.Id.String()+"/keys/rotate", nil); reply.status != 204 {
+		t.Fatalf("a later rotation answered %d %s", reply.status, reply.body)
+	}
+}
+
+// A failed rotation's error stands only while the key still needs replacing: once the owner turns
+// rotation off, the next claim clears it without minting. A created destination shows when its key
+// is due, as the list does.
+func TestARotationFailureClearsOnceNoKeyIsNeeded(t *testing.T) {
+	k := newKeysFixture(t)
+	var d api.BackupDestination
+	k.b.call("POST", k.base+"/backup-destinations", k.managed("Managed", k.first.server), 201, &d)
+	if d.RotationDueAt == nil || !d.RotationDueAt.Equal(*k.destinations()[d.Id].RotationDueAt) {
+		t.Fatalf("the created destination is due at %v", d.RotationDueAt)
+	}
+	old := d.Keys[0]
+	k.aws.Fail("CreateAccessKey", "AccessDenied")
+	k.exec(t, `UPDATE backup_storage_keys SET activated_at=now() - interval '100 days' WHERE id=$1`, old.Id)
+	k.run(t, keySweep{})
+	waitFor(t, "the due rotation recorded no error", 30*time.Second, func() bool {
+		return k.destinations()[d.Id].RemintError != nil
+	})
+	waitFor(t, "the failed rotation's job didn't finish", 30*time.Second, func() bool {
+		var running bool
+		if err := k.f.st.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM river_job WHERE kind='platform_backup_remint_v1' AND state <> 'completed')`).Scan(&running); err != nil {
+			t.Fatal(err)
+		}
+		return !running
+	})
+
+	k.b.call("PUT", k.base+"/backup-storage-accounts/"+k.account.Id.String()+"/key-rotation", map[string]any{"keyRotationDays": nil}, 200, nil)
+	k.b.call("POST", k.base+"/backup-destinations/"+d.Id.String()+"/retry", nil, 204, nil)
+	k.run(t, keySweep{})
+	waitFor(t, "the error outlived the rotation", 30*time.Second, func() bool {
+		return k.destinations()[d.Id].RemintError == nil
+	})
+	if keys := k.serverKeys(d.Id); len(keys["active"]) != 1 || keys["active"][0].Id != old.Id || len(keys["minting"]) != 0 {
+		t.Fatalf("with no key needed, the keys are %+v", keys)
 	}
 }

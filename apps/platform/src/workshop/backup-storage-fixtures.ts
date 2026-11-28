@@ -163,11 +163,16 @@ const managed = (
   ...value,
 });
 
-// The live server's destination: its current key, the one it superseded, and a rotation whose
-// new key keeps failing to be made. Once the owner asks for a rotation, it waits for its key.
+// When the edge server's current key was activated. Its 90 days have passed, so it is due.
+const currentActivated = "2026-08-20T09:00:00Z";
+
+// The live server's destination: its current key, the one it superseded, and the rotation that is
+// due, whose new key keeps failing to be made. As management does, the due date follows the
+// account's key rotation, and once the owner asks for a rotation it waits for its key.
 const destinations = (
   revoked: ReadonlySet<string>,
   rotated: ReadonlySet<string>,
+  days: number | null,
 ): Schema["BackupDestination"][] => [
   managed({
     id: destinationId,
@@ -176,20 +181,22 @@ const destinations = (
     serverId: edge,
     exposed: false,
     keys: [
-      key(0xb07, {}),
+      key(0xb07, { activatedAt: currentActivated }),
       key(0xb09, {
         state: "revoked",
         lastError: "superseded",
-        activatedAt: "2026-08-01T09:00:00Z",
-        revokedAt: "2026-11-01T09:20:00Z",
+        activatedAt: "2026-05-01T09:00:00Z",
+        revokedAt: "2026-08-20T09:20:00Z",
       }),
     ].map(revokedBy(revoked)),
     remintError: "timeout",
     rotationRequested: rotated.has(destinationId),
     rotationDueAt:
-      revoked.has(currentKey) || rotated.has(destinationId)
+      revoked.has(currentKey) || rotated.has(destinationId) || days === null
         ? null
-        : "2027-01-30T09:00:00Z",
+        : new Date(
+            Date.parse(currentActivated) + days * 24 * 60 * 60 * 1000,
+          ).toISOString(),
   }),
   managed({
     id: retiredDestinationId,
@@ -283,7 +290,13 @@ export function backupStorageHandlers({
             "Server text the dashboard does not show.",
             500,
           )
-        : HttpResponse.json(destinations(revokedKeys, rotatedDestinations)),
+        : HttpResponse.json(
+            destinations(
+              revokedKeys,
+              rotatedDestinations,
+              rotation ? rotation.days : account.keyRotationDays,
+            ),
+          ),
     ),
     http.get(`${workspaceRoot}/servers`, () =>
       HttpResponse.json([

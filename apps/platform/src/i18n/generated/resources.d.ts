@@ -436,7 +436,7 @@ export default interface Resources {
       "peers": "Peer installations",
       "peersDescription": "Users these installations make in this AWS account are shown as theirs. Each with the permissions boundary raises an alert until you acknowledge it, since someone holding the admin key can make a user with a peer’s tag.",
       "rotation": "Key rotation",
-      "rotationEvery": "Management replaces each destination’s key when it is {{days}} days old.",
+      "rotationEvery": "Management replaces each destination’s key when it is {{count}} day old." | "Management replaces each destination’s key when it is {{count}} days old.",
       "rotationOff": "Off. Keys stay in use until you rotate them."
     },
     "add": {
@@ -469,6 +469,7 @@ export default interface Resources {
       "rotateTitle": "Rotate this destination’s key?",
       "rotating": "Management is replacing this destination’s key. The old key is revoked once {{server}} installs the new one, so a server that is offline keeps using it until then.",
       "rotationDue": "Management replaces the key on {{date}}.",
+      "rotationOverdue": "The key was due to be replaced on {{date}}. Management is replacing it.",
       "rotationRequested": "A new key has been asked for. Management is making it.",
       "server": "Keys for {{server}}",
       "unknownServer": "server {{id}}"
@@ -536,7 +537,7 @@ export default interface Resources {
         "server": "Server key"
       },
       "revoke": "Revoke key",
-      "revokeCurrent": "Management revokes the key at AWS and then makes the server a new one. The server’s backups can fail until it has installed the new key.",
+      "revokeCurrent": "Management revokes the key at AWS. If it was the server’s only key in use, management then makes it a new one, and the server’s backups can fail until it has installed it.",
       "revokeHandedOver": "This key was handed over to a workspace transfer. Revoking it breaks the transferred server’s backups, which can then no longer reach this bucket.",
       "revokeRecovery": "The restore using it can no longer read its snapshot. Management revokes it itself once the restore ends.",
       "revokeTitle": "Revoke this key?",

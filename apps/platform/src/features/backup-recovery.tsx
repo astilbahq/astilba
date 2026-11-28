@@ -180,17 +180,19 @@ export function RevokedServerRecovery({
               })
             }
           >
-            <fieldset className={r.choices}>
-              <legend className={r.legend}>{t(($) => $.picker.legend)}</legend>
+            <fieldset className={s.choices}>
+              <legend className={s.choiceLegend}>
+                {t(($) => $.picker.legend)}
+              </legend>
               {receipts.data.map((receipt) => {
                 const run = runs.find((v) => v.snapshot === receipt.snapshot);
                 const before =
                   revokedAt &&
                   Date.parse(revokedAt) - Date.parse(receipt.firstReportedAt);
                 return (
-                  <label key={receipt.snapshot} className={r.choice}>
+                  <label key={receipt.snapshot} className={s.choice}>
                     <Radio name="snapshot" value={receipt.snapshot} required />
-                    <span className={r.choiceText}>
+                    <span className={s.choiceText}>
                       <span>
                         {before && before > 0
                           ? t(($) => $.picker.recordedBefore, {
@@ -226,7 +228,7 @@ export function RevokedServerRecovery({
                 );
               })}
             </fieldset>
-            <Label className={r.choice}>
+            <Label className={s.choice}>
               <Checkbox name="acknowledged" required />
               {t(($) => $.picker.acknowledge)}
             </Label>

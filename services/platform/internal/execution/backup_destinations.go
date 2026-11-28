@@ -231,14 +231,14 @@ func (s *Service) CreateManagedBackupDestination(ctx context.Context, p store.Pr
 		}
 		return api.BackupDestination{}, mintError(err)
 	}
-	var out api.BackupDestination
-	err = s.scope(ctx, p, ws, workspaceAccess{}, "", uuid.Nil, func(tx pgx.Tx) error {
-		keys, err := destinationKeys(ctx, tx, ws)
-		out = destinationView(d, &server, false, false)
-		out.AccountId, out.Keys = &account, keys[d.ID]
-		return err
-	})
-	return out, err
+	// The view is the list's, so it shows the key's rotation as every later read does.
+	list, err := s.BackupDestinations(ctx, p, ws)
+	if i := slices.IndexFunc(list, func(v api.BackupDestination) bool { return v.Id == d.ID }); err == nil && i >= 0 {
+		return list[i], nil
+	} else if err == nil {
+		err = domain.NotFound
+	}
+	return api.BackupDestination{}, err
 }
 
 var (
@@ -323,7 +323,7 @@ func (s *Service) RevokeBackupStorageKey(ctx context.Context, p store.Principal,
 }
 
 var (
-	errRotateRevoked = &domain.Error{Code: "conflict", Message: "This destination's server is revoked, so its keys are being revoked rather than replaced."}
+	errRotateRevoked = &domain.Error{Code: "conflict", Message: "This destination's server is revoked, so its keys aren't replaced."}
 	errRotateNoKey   = &domain.Error{Code: "conflict", Message: "This destination has no key in use to replace."}
 	errRotating      = &domain.Error{Code: "conflict", Message: "This destination's key is already being replaced. Its old key is revoked once its server installs the new one."}
 	errRotateAsked   = &domain.Error{Code: "conflict", Message: "A new key for this destination has already been asked for. If making it keeps failing, fix the cause and retry."}

@@ -309,7 +309,7 @@ WHERE id=(SELECT d.id FROM backup_destinations d
             count(k.activated_at) AS activated,max(k.activated_at) FILTER (WHERE k.state = 'active') AS newest
         FROM backup_storage_keys k WHERE k.workspace_id = d.workspace_id AND k.destination_id = d.id AND k.purpose = 'server') k
     WHERE (d.remint_next_at IS NULL OR d.remint_next_at <= clock_timestamp()) AND k.activated > 0 AND k.minting = 0
-        AND (k.active = 0 OR k.active = 1 AND (d.rekey_requested_at > k.newest OR k.newest <= clock_timestamp() - make_interval(hours => 24 * a.key_rotation_days)))
+        AND (k.active = 0 OR k.active = 1 AND (d.rekey_requested_at > k.newest OR k.newest <= clock_timestamp() - make_interval(hours => 24 * a.key_rotation_days)) OR d.remint_error IS NOT NULL)
     ORDER BY d.remint_next_at NULLS FIRST,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED)
 RETURNING workspace_id,id
 `
@@ -322,7 +322,9 @@ type ClaimDueBackupRemintRow struct {
 // unscoped: a managed destination whose server isn't revoked, that once had a key and has none
 // minting, and either has no active one, a renewed server's, or has one the owner asked to replace
 // or that is older than its account's key_rotation_days, as BackupDestinationKeyState reads it.
-// Claiming pushes its next attempt on before the mint runs.
+// One whose re-mint failed is claimed even once it no longer needs a key, for example after the
+// owner turned rotation off, so its job clears the failure. Claiming pushes its next attempt on
+// before the mint runs.
 func (q *Queries) ClaimDueBackupRemint(ctx context.Context) (ClaimDueBackupRemintRow, error) {
 	row := q.db.QueryRow(ctx, claimDueBackupRemint)
 	var i ClaimDueBackupRemintRow
@@ -546,52 +548,6 @@ func (q *Queries) DestinationPolicyGenerations(ctx context.Context, arg Destinat
 			&i.EnvironmentID,
 			&i.Configuration,
 			&i.Reported,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const destinationServerKeys = `-- name: DestinationServerKeys :many
-SELECT k.workspace_id,k.destination_id,k.id,k.holder_server_id,k.activated_at,k.installs
-FROM backup_storage_keys k
-WHERE k.purpose = 'server' AND k.state = 'active'
-    AND EXISTS(SELECT 1 FROM backup_storage_keys o WHERE o.workspace_id = k.workspace_id AND o.destination_id = k.destination_id AND o.purpose = 'server' AND o.state = 'active' AND o.id <> k.id)
-ORDER BY k.workspace_id,k.destination_id,k.activated_at DESC,k.id DESC
-LIMIT 1000
-`
-
-type DestinationServerKeysRow struct {
-	WorkspaceID    uuid.UUID  `json:"workspace_id"`
-	DestinationID  *uuid.UUID `json:"destination_id"`
-	ID             uuid.UUID  `json:"id"`
-	HolderServerID *uuid.UUID `json:"holder_server_id"`
-	ActivatedAt    *time.Time `json:"activated_at"`
-	Installs       []byte     `json:"installs"`
-}
-
-// unscoped: the sweep's view of every managed destination's active server keys, newest first.
-func (q *Queries) DestinationServerKeys(ctx context.Context) ([]DestinationServerKeysRow, error) {
-	rows, err := q.db.Query(ctx, destinationServerKeys)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DestinationServerKeysRow{}
-	for rows.Next() {
-		var i DestinationServerKeysRow
-		if err := rows.Scan(
-			&i.WorkspaceID,
-			&i.DestinationID,
-			&i.ID,
-			&i.HolderServerID,
-			&i.ActivatedAt,
-			&i.Installs,
 		); err != nil {
 			return nil, err
 		}
@@ -1046,42 +1002,6 @@ func (q *Queries) PendingKeyInstalls(ctx context.Context) ([]PendingKeyInstallsR
 	return items, nil
 }
 
-const policyReportedGenerations = `-- name: PolicyReportedGenerations :many
-SELECT id,COALESCE((status->>'generation')::bigint,0)::bigint AS reported,(configuration->>'generation')::bigint AS configured
-FROM backup_policies WHERE workspace_id = $1 AND id = ANY($2::uuid[])
-`
-
-type PolicyReportedGenerationsParams struct {
-	WorkspaceID uuid.UUID   `json:"workspace_id"`
-	Ids         []uuid.UUID `json:"ids"`
-}
-
-type PolicyReportedGenerationsRow struct {
-	ID         uuid.UUID `json:"id"`
-	Reported   int64     `json:"reported"`
-	Configured int64     `json:"configured"`
-}
-
-func (q *Queries) PolicyReportedGenerations(ctx context.Context, arg PolicyReportedGenerationsParams) ([]PolicyReportedGenerationsRow, error) {
-	rows, err := q.db.Query(ctx, policyReportedGenerations, arg.WorkspaceID, arg.Ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []PolicyReportedGenerationsRow{}
-	for rows.Next() {
-		var i PolicyReportedGenerationsRow
-		if err := rows.Scan(&i.ID, &i.Reported, &i.Configured); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const recordBackupRemint = `-- name: RecordBackupRemint :exec
 UPDATE backup_destinations SET remint_attempts=0,remint_error=NULL,remint_next_at=NULL
 WHERE workspace_id = $1 AND id = $2
@@ -1448,6 +1368,51 @@ func (q *Queries) SetBackupStorageKeyRotation(ctx context.Context, arg SetBackup
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const supersededServerKeys = `-- name: SupersededServerKeys :many
+SELECT k.workspace_id,k.id
+FROM backup_storage_keys k
+CROSS JOIN LATERAL (SELECT n.id,n.installs FROM backup_storage_keys n
+    WHERE n.workspace_id = k.workspace_id AND n.destination_id = k.destination_id AND n.purpose = 'server' AND n.state = 'active'
+    ORDER BY n.activated_at DESC,n.id DESC LIMIT 1) n
+WHERE k.purpose = 'server' AND k.state = 'active' AND n.id <> k.id
+    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(n.installs) i
+        JOIN backup_policies p ON p.workspace_id = k.workspace_id AND p.id = (i->>'policy')::uuid
+        JOIN environments e ON e.workspace_id = p.workspace_id AND e.id = p.environment_id AND e.state IN ('active','retiring')
+        WHERE COALESCE((p.status->>'generation')::bigint,0) < (i->>'generation')::bigint)
+ORDER BY k.workspace_id,k.id
+LIMIT 1000
+`
+
+type SupersededServerKeysRow struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+	ID          uuid.UUID `json:"id"`
+}
+
+// unscoped: the active server keys whose destination's newest active key has replaced them on
+// their holder. The holder reports every policy generation the newest key's installs carry, or the
+// policy is gone or in an environment whose retirement removed its schedules from the host
+// (retired, purging or purged), so it uses no key. A retired environment restored later installs
+// its policy at that generation, which carries the newest key.
+func (q *Queries) SupersededServerKeys(ctx context.Context) ([]SupersededServerKeysRow, error) {
+	rows, err := q.db.Query(ctx, supersededServerKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SupersededServerKeysRow{}
+	for rows.Next() {
+		var i SupersededServerKeysRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unacknowledgedPeerBackupStorageUsers = `-- name: UnacknowledgedPeerBackupStorageUsers :many

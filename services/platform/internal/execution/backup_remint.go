@@ -51,7 +51,10 @@ func (w *remintWorker) Work(ctx context.Context, job *river.Job[remintArgs]) err
 	s, ws, destination := w.service, job.Args.Workspace, job.Args.Destination
 	key, err := s.startRemint(ctx, ws, destination)
 	if errors.Is(err, errNoRemint) {
-		return nil
+		// A failure recorded while it needed one no longer stands.
+		return s.Store.WorkspaceWriteTransaction(ctx, ws, func(tx pgx.Tx) error {
+			return db.New(tx).RecordBackupRemint(ctx, db.RecordBackupRemintParams{WorkspaceID: ws, ID: destination})
+		})
 	} else if err != nil {
 		return s.remintFailed(ctx, ws, destination, err)
 	}

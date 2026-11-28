@@ -47,7 +47,7 @@ export function ManagedDestination({
   const serverKeys = destination.keys.filter((k) => k.purpose === "server");
   const active = serverKeys.filter((k) => k.state === "active").length;
   const minting = serverKeys.some((k) => k.state === "minting");
-  // A revoked server's keys are revoked rather than replaced.
+  // A revoked server's keys are never replaced: they are revoked, or kept for a handover.
   const revokedServer =
     servers?.find((v) => v.id === destination.serverId)?.status === "revoked";
   // Rotating takes the button away, so focus moves to the heading, which the notice follows.
@@ -117,9 +117,13 @@ export function ManagedDestination({
       ) : (
         destination.rotationDueAt && (
           <p className={s.muted}>
-            {t(($) => $.destination.rotationDue, {
-              date: text.date(destination.rotationDueAt),
-            })}
+            {Date.parse(destination.rotationDueAt) <= Date.now()
+              ? t(($) => $.destination.rotationOverdue, {
+                  date: text.date(destination.rotationDueAt),
+                })
+              : t(($) => $.destination.rotationDue, {
+                  date: text.date(destination.rotationDueAt),
+                })}
           </p>
         )
       )}

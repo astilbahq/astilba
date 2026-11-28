@@ -30,7 +30,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 // An account whose check failed and found users management didn't make, one of which AWS won't let
-// management delete, a managed destination whose rotation keeps failing, and one on a revoked
+// management delete, a managed destination whose due rotation keeps failing, and one on a revoked
 // server with a handed-over and a failing key.
 export const Accounts: Story = {
   play: async ({ canvasElement }) => {
@@ -94,7 +94,9 @@ export const Accounts: Story = {
       ),
     ).toBeVisible();
     await expect(
-      view.getByText(/^Management replaces the key on /),
+      view.getByText(
+        /^The key was due to be replaced on .+ Management is replacing it\.$/,
+      ),
     ).toBeVisible();
     await expect(
       view.getAllByRole("button", { name: "Rotate key" }),
@@ -200,6 +202,40 @@ export const TurnOffKeyRotation: Story = {
     await expect(
       await account.findByText("Off. Keys stay in use until you rotate them."),
     ).toBeVisible();
+    // The destinations no longer say when their keys are replaced, and the choice keeps focus.
+    await waitFor(() =>
+      expect(
+        canvas.queryByText(/^The key was due to be replaced on /),
+      ).not.toBeInTheDocument(),
+    );
+    await expect(
+      form.getByRole("radio", { name: /^Don’t replace keys automatically/ }),
+    ).toBeChecked();
+  },
+};
+
+// A period saved from the keyboard keeps focus in its field, and the destinations follow it.
+export const ShortenKeyRotation: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const account = within(
+      await canvas.findByRole("article", { name: "Production AWS" }),
+    );
+    await userEvent.click(account.getByText("Change key rotation"));
+    const days = account.getByLabelText(
+      "Maximum key age in days, from 30 to 365",
+    );
+    await userEvent.clear(days);
+    await userEvent.type(days, "60{Enter}");
+    await expect(await account.findByText("Key rotation saved.")).toBeVisible();
+    await expect(savedRotation()).toEqual({ days: 60 });
+    await expect(
+      await account.findByText(
+        "Management replaces each destination’s key when it is 60 days old.",
+      ),
+    ).toBeVisible();
+    await expect(days).toHaveFocus();
+    await expect(days).toHaveValue(60);
   },
 };
 

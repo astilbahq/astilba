@@ -61,7 +61,7 @@ export function StorageAccount({
           {account.keyRotationDays === null
             ? t(($) => $.account.rotationOff)
             : t(($) => $.account.rotationEvery, {
-                days: account.keyRotationDays,
+                count: account.keyRotationDays,
               })}
         </dd>
       </dl>

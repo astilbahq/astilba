@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  backupDestinationsOptions,
   backupStorageAccountPath,
   backupStorageAccountsOptions,
   backupStorageAccountsPath,
@@ -55,19 +56,26 @@ const suggestedRotationDays = 90;
 
 /**
  * How old the account's destinations' keys may grow before management replaces them. Turning
- * that off is a choice of its own rather than an empty field. The server names a refused period
- * `keyRotationDays`.
+ * that off is a choice of its own rather than an empty field. Resetting the form chooses `days`
+ * again; nothing else remounts the fields, so focus stays where the owner left it.
  */
 function KeyRotationFields({ days }: { days: number | null }) {
   const { t } = useTranslation("backup-storage");
   const [on, setOn] = useState(days !== null);
   const onId = useId(),
     offId = useId();
+  const fields = useRef<HTMLFieldSetElement>(null);
+  useEffect(() => {
+    const form = fields.current?.form;
+    const reset = () => setOn(days !== null);
+    form?.addEventListener("reset", reset);
+    return () => form?.removeEventListener("reset", reset);
+  }, [days]);
   return (
-    <fieldset className={st.choices}>
-      <legend className={st.legend}>{t(($) => $.rotation.legend)}</legend>
+    <fieldset ref={fields} className={s.choices}>
+      <legend className={s.choiceLegend}>{t(($) => $.rotation.legend)}</legend>
       <p className={s.muted}>{t(($) => $.rotation.description)}</p>
-      <label htmlFor={onId} className={st.choice}>
+      <label htmlFor={onId} className={s.choice}>
         <Radio
           id={onId}
           name="rotation"
@@ -88,7 +96,7 @@ function KeyRotationFields({ days }: { days: number | null }) {
           defaultValue={days ?? suggestedRotationDays}
         />
       )}
-      <label htmlFor={offId} className={st.choice}>
+      <label htmlFor={offId} className={s.choice}>
         <Radio
           id={offId}
           name="rotation"
@@ -96,7 +104,7 @@ function KeyRotationFields({ days }: { days: number | null }) {
           checked={!on}
           onChange={() => setOn(false)}
         />
-        <span className={st.choiceText}>
+        <span className={s.choiceText}>
           <span>{t(($) => $.rotation.off)}</span>
           <span className={s.muted}>{t(($) => $.rotation.offDescription)}</span>
         </span>
@@ -115,8 +123,6 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
   const action = useAction({ recentAuth: true });
   const queries = useQueryClient();
   const [added, setAdded] = useState("");
-  // A reset form starts again from the suggested period.
-  const [round, setRound] = useState(0);
   return (
     <details className={s.panel}>
       <summary>{t(($) => $.add.summary)}</summary>
@@ -148,7 +154,6 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
               }),
             );
             form.reset();
-            setRound((n) => n + 1);
             setAdded(t(($) => $.add.added, { name: account.name }));
             await queries.invalidateQueries({
               queryKey: backupStorageAccountsOptions(workspaceId).queryKey,
@@ -167,7 +172,7 @@ export function AddStorageAccount({ workspaceId }: { workspaceId: string }) {
           autoCapitalize="none"
           spellCheck={false}
         />
-        <KeyRotationFields key={round} days={suggestedRotationDays} />
+        <KeyRotationFields days={suggestedRotationDays} />
         <BusyButton busy={action.isPending}>
           {t(($) => $.add.submit)}
         </BusyButton>
@@ -273,18 +278,19 @@ export function KeyRotation({
               }),
             );
             setSaved(true);
-            await queries.invalidateQueries({
-              queryKey: backupStorageAccountsOptions(workspaceId).queryKey,
-            });
+            // The destinations show when their keys are replaced, and a shorter period can start
+            // a replacement at once.
+            await Promise.all(
+              [
+                backupStorageAccountsOptions(workspaceId),
+                backupDestinationsOptions(workspaceId),
+              ].map(({ queryKey }) => queries.invalidateQueries({ queryKey })),
+            );
           })
         }
       >
         <ErrorNotice error={action.error} />
-        {/* Shows the setting again whenever it changes. */}
-        <KeyRotationFields
-          key={account.keyRotationDays ?? "off"}
-          days={account.keyRotationDays}
-        />
+        <KeyRotationFields days={account.keyRotationDays} />
         <BusyButton busy={action.isPending}>
           {t(($) => $.rotation.submit)}
         </BusyButton>
