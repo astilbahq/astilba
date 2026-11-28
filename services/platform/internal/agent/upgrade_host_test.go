@@ -385,6 +385,7 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 						t.Fatal(err)
 					}
 				}
+				nativeUpgradeLocaleRefusals(t, e, helper, source.ID, a, p, j.source)
 				// Temporary tables go with their sessions, and the temporary schemas the sessions
 				// leave behind hold nothing; any role may make them in postgres.
 				for _, database := range []domain.Application{admin, template} {
