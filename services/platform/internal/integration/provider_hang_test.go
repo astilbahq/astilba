@@ -33,6 +33,8 @@ type heldGitea struct {
 	// secondPull opens pull request 8 beside 7, from the same head.
 	secondPull atomic.Bool
 	onRequest  atomic.Pointer[func(path string)]
+	// refusing answers requests whose path ends with its match as it says, until stored nil.
+	refusing atomic.Pointer[providerRefusal]
 
 	mu       sync.Mutex
 	match    string
@@ -94,6 +96,14 @@ func newHeldGitea(t *testing.T) *heldGitea {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
+		if refusal := h.refusing.Load(); refusal != nil && strings.HasSuffix(r.URL.Path, refusal.match) {
+			for name, value := range refusal.header {
+				w.Header().Set(name, value)
+			}
+			w.WriteHeader(refusal.status)
+			_, _ = io.WriteString(w, refusal.body)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/branches/"):
@@ -114,6 +124,14 @@ func newHeldGitea(t *testing.T) *heldGitea {
 	}))
 	t.Cleanup(h.server.Close)
 	return h
+}
+
+// providerRefusal is how a Git provider refuses a request: its status, headers and body.
+type providerRefusal struct {
+	match  string
+	status int
+	header map[string]string
+	body   string
 }
 
 // hold makes requests whose path ends with match hang until the returned release runs.

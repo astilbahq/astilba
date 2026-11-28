@@ -179,14 +179,13 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 		return true, nil
 	}
 	// A connection whose repository is no longer the one the pipeline froze never becomes it again.
-	const moved = "the connection's repository is no longer the one this pipeline was queued for."
 	current, app, err := git.connection(ctx, tx, p.Connection.ID)
 	if err != nil {
 		return false, err
 	}
 	if app {
 		if current.Provider != p.Connection.Provider || current.BaseURL != p.Connection.BaseURL || current.Repository != p.Connection.Repository || current.RepositoryID != p.Connection.RepositoryID || current.Private != p.Connection.Private {
-			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+moved, "Stopped: "+moved)
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+repositoryMoved, "Stopped: "+repositoryMoved)
 		}
 	} else {
 		repository, err := git.repository(ctx, tx, p.Connection.ID)
@@ -194,10 +193,15 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 			return false, err
 		}
 		if repository.Err != nil {
+			// A provider that refuses the repository for good, as once it is deleted, answers so at
+			// every poll.
+			if why, final := finalProviderRefusal(repository.Err); final {
+				return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+why, "Stopped: "+why)
+			}
 			return false, repository.Err
 		}
 		if repository.Value.ID != p.Connection.RepositoryID || repository.Value.Private != p.Connection.Private {
-			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+moved, "Stopped: "+moved)
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+repositoryMoved, "Stopped: "+repositoryMoved)
 		}
 	}
 	if err = s.populatePipeline(ctx, tx, git, ws, c.EnvironmentId, c.Id, c.Deadline, &p); err != nil {
@@ -212,6 +216,11 @@ func (s *Service) decidePipelineDelivery(ctx context.Context, git *gitAnswers, a
 				return false, err
 			}
 			return false, tx.Commit(ctx)
+		}
+		// A refusal no later poll changes, as once the App is uninstalled or the clone credential
+		// loses access to the repository, settles the pipeline.
+		if why, final := finalProviderRefusal(err); final {
+			return s.settleRefusedPipeline(ctx, tx, ws, c, undelivered, "Refused before runner delivery: "+why, "Stopped: "+why)
 		}
 		// Build inputs can fail their check at delivery although they passed it at admission, such
 		// as public arguments that now hold one of the environment's runtime secrets. A preview's

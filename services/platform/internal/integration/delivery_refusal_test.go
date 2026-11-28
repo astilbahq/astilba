@@ -2,6 +2,7 @@ package integration
 
 import (
 	"encoding/json/v2"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,14 @@ func (r *refusalRunner) operation(t *testing.T, id uuid.UUID) (state, note strin
 	return state, note, cancelled
 }
 
+// refuseRepository makes the runner's Git provider refuse the repository's own API path, which
+// delivery asks before anything is sent.
+func refuseRepository(status int, header map[string]string, body string) func(*refusalRunner) {
+	return func(r *refusalRunner) {
+		r.provider.refusing.Store(&providerRefusal{match: "/repos/team/app", status: status, header: header, body: body})
+	}
+}
+
 func (r *refusalRunner) report(t *testing.T, c api.ExecutionCommand, state api.ExecutionState) {
 	t.Helper()
 	agentRequest(t, r.f.server.Client(), r.f.server.URL, "/agent/v1/report", r.token, api.AgentReport{Id: c.Id, Generation: c.Generation, PlanHash: c.PlanHash, Sequence: 1, State: state, Steps: []api.ExecutionStep{}}, 204, nil)
@@ -114,6 +123,20 @@ func TestBuildRefusedAtDeliveryReleasesTheRunner(t *testing.T) {
 			stopped: "Stopped: the connection's repository is no longer the one this pipeline was queued for.",
 			refuse:  func(r *refusalRunner) { r.provider.repository.Store(13) },
 			restore: func(r *refusalRunner) { r.provider.repository.Store(12) },
+		},
+		{
+			name:    "repository deleted",
+			failed:  "Refused before runner delivery: the Git provider has no repository by that name that the connection can see (HTTP 404)",
+			stopped: "Stopped: the Git provider has no repository by that name that the connection can see (HTTP 404)",
+			refuse:  refuseRepository(http.StatusNotFound, nil, `{"message":"Not Found"}`),
+			restore: func(r *refusalRunner) { r.provider.refusing.Store(nil) },
+		},
+		{
+			name:    "repository access refused",
+			failed:  "Refused before runner delivery: the Git provider refused the connection access to the repository (HTTP 403)",
+			stopped: "Stopped: the Git provider refused the connection access to the repository (HTTP 403)",
+			refuse:  refuseRepository(http.StatusForbidden, nil, `{"message":"user does not have permission"}`),
+			restore: func(r *refusalRunner) { r.provider.refusing.Store(nil) },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
