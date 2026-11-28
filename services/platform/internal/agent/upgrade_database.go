@@ -18,7 +18,7 @@ import (
 func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application) error {
 	for _, check := range []struct{ sql, want, message string }{
 		// template0 is oid 4, which the checks below compare the other databases with. A superuser
-		// can drop it once it isn't a template, and nothing can make it again under that oid.
+		// can drop it once it isn't a template.
 		// inline-sql: reads a managed database's catalog, not the platform database.
 		{"SELECT count(*) FROM pg_database WHERE oid = 4", "1", "a cluster without template0 requires a separate recipe"},
 		// By name: a database its owner marked as a template is still one the upgrade would lose.
@@ -120,12 +120,13 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 var localeDatabases = map[string]string{"application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1"}
 
 // upgradeLocaleSQL lists, one per line as key:properties, the databases of localeDatabases whose
-// encoding or locale differs from template0's. template0 is always oid 4, which the checks before
-// it require, and can't be made again, so it keeps what initdb gave the cluster. The upgrade's new
-// cluster gives every database what the target image's initdb chooses by default, which is
-// template0's for a source the pinned image made with its defaults. A source made with other
-// locale variables differs from the new cluster in template0 too, and so in the application's
-// database, which the restore's verification refuses. Before the owner model the database user is
+// encoding or locale differs from template0's, always oid 4, which the checks before it require.
+// The upgrade's new cluster gives every database what the target image's initdb chooses by
+// default, which is template0's for a source the pinned image made with its defaults. A source
+// made with other locale variables differs from the new cluster in template0 too, as does one whose
+// template0 a superuser changed or, with allow_system_table_mods, made again under oid 4; a
+// database matching it then differs from the new cluster, which the restore's verification
+// refuses for the application's database, after downtime. Before the owner model the database user is
 // a superuser and can drop template1 or postgres and create it again from template0 in another
 // encoding or locale, or do the same to the application's database from another one. The columns
 // are PostgreSQL 17's and 18's, the majors an upgrade starts from or reaches. datcollversion is
