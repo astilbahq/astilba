@@ -77,6 +77,11 @@ func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (f
 	if err = e.removeRouteProbe(ctx, cleanup, server); err != nil {
 		return nil, nil, err
 	}
+	// The create below outlasts ctx, so a round that ctx ended while it removed a leftover
+	// creates nothing.
+	if err = ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	limit := strconv.Itoa(int(deployment.PoolHealthTimeout / time.Second))
 	// Docker goes on creating a container once its client stops waiting, and AutoRemove
 	// never takes one that never started, so a round that ctx ended mid-create would leave

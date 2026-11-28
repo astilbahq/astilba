@@ -240,6 +240,22 @@ func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 		t.Fatalf("the cancelled round gave %v", err)
 	}
 	h.probesLeftNothing()
+	// A probe another server's agent left, as one enrolled on this machine before might,
+	// holds up no round and stays. This server's own is removed.
+	left := func(name string, labels map[string]string) string {
+		t.Helper()
+		created, err := h.f.docker.ContainerCreate(t.Context(), client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: execution.TestImage, Labels: labels}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = h.f.docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
+		})
+		return created.ID
+	}
+	server, other := h.server.String(), uuid.NewString()
+	foreign := left(routeProbeName(other), map[string]string{labelServer: other, labelKind: "route-probe-v1"})
+	stale := left(routeProbeName(server), map[string]string{labelServer: server, labelKind: "route-probe-v1"})
 	// PLAT-618. Docker goes on creating a container after its client gives up, so a round
 	// that ended while Docker created its probe left the probe behind. It never started, so
 	// AutoRemove never took it.
@@ -256,28 +272,12 @@ func TestNativeRedirectedProbeLeavesNothing(t *testing.T) {
 	}
 	h.e.Docker = agent
 	h.probesLeftNothing()
-	// A probe another server's agent left, as one enrolled on this machine before might,
-	// holds up no round and stays. This server's own is removed. A container under this
-	// server's probe's name that is not its probe stays, and stops the round.
-	left := func(name string, labels map[string]string) string {
-		t.Helper()
-		created, err := h.f.docker.ContainerCreate(t.Context(), client.ContainerCreateOptions{Name: name, Config: &container.Config{Image: execution.TestImage, Labels: labels}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_, _ = h.f.docker.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
-		})
-		return created.ID
+	if _, err = h.f.docker.ContainerInspect(t.Context(), stale, client.ContainerInspectOptions{}); !errdefs.IsNotFound(err) {
+		t.Fatalf("this server's probe left behind remains: %v", err)
 	}
-	server, other := h.server.String(), uuid.NewString()
-	foreign := left(routeProbeName(other), map[string]string{labelServer: other, labelKind: "route-probe-v1"})
-	left(routeProbeName(server), map[string]string{labelServer: server, labelKind: "route-probe-v1"})
 	health := "http://" + host + ":8080/health"
-	if failed, stderr, err := h.e.probeRound(t.Context(), []string{health}); err != nil || failed != -1 {
-		t.Fatalf("a round with probes left behind gave %d, %v: %s", failed, err, stderr)
-	}
-	h.probesLeftNothing()
+	// A container under this server's probe's name that is not its probe stays, and stops
+	// the round.
 	squatter := left(routeProbeName(server), map[string]string{labelServer: server})
 	if _, _, err = h.e.probeRound(t.Context(), []string{health}); err == nil || !strings.Contains(err.Error(), "ownership conflict") {
 		t.Fatalf("a round under a name another container holds gave %v", err)

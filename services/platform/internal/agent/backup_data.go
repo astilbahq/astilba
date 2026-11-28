@@ -204,10 +204,35 @@ func (e *Engine) quiesceFiles(ctx context.Context, s *scheduleState) error {
 
 // writerResumeTimeout bounds resuming the writers a backup stopped, which it does however
 // its run ended. Docker starts one in well under a second, but a loaded host's Docker has
-// taken more than thirty seconds. A writer left stopped keeps its application down, and
-// holds back every other operation on the host until the run is resolved. A backup
-// command has ten minutes past its run's own timeout for this.
+// taken more than thirty seconds. A writer that does not start fails the backup, though
+// its dump is complete, and stays stopped until the agent next resumes it; a host command
+// that arrives meanwhile needs attention. A backup command has ten minutes past its run's
+// own timeout for this.
 const writerResumeTimeout = 5 * time.Minute
+
+// writerResumeGrace is what is left of the resume once the agent is asked to stop, from
+// then or from the resume's start if that is later: systemd kills an agent that has not
+// stopped within 40 seconds, and a run killed while it resumes is left uncertain, holding
+// the host's schedules until an operator resolves it. A run that ends with writers still
+// stopped keeps them recorded, and the agent's next tick of the schedules starts them.
+const writerResumeGrace = 15 * time.Second
+
+// resumeContext bounds resuming the writers of a run whose context is ctx by long, however
+// ctx ended, or once stopping is cancelled, by grace from then.
+func resumeContext(ctx, stopping context.Context, long, grace time.Duration) (context.Context, context.CancelFunc) {
+	resume, cancel := context.WithTimeout(context.WithoutCancel(ctx), long)
+	if stopping == nil {
+		return resume, cancel
+	}
+	unhook := context.AfterFunc(stopping, func() {
+		timer := time.AfterFunc(grace, cancel)
+		context.AfterFunc(resume, func() { timer.Stop() })
+	})
+	return resume, func() {
+		unhook()
+		cancel()
+	}
+}
 
 // resumeBackupWriters starts again each writer s stopped. One that cannot start keeps no
 // other stopped, and all stay recorded until every one runs, so resuming again starts
@@ -232,7 +257,7 @@ func (e *Engine) resumeBackupWriters(ctx context.Context, s *scheduleState) erro
 }
 func (e *Engine) dumpFiles(ctx context.Context, s *scheduleState, stage string, m *backup.Manifest) (err error) {
 	defer func() {
-		resume, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerResumeTimeout)
+		resume, cancel := resumeContext(ctx, e.Stopping, writerResumeTimeout, writerResumeGrace)
 		defer cancel()
 		err = errors.Join(err, e.resumeBackupWriters(resume, s))
 	}()

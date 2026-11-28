@@ -385,7 +385,7 @@ func run() error {
 	if command != "run" {
 		return errors.New("unknown command")
 	}
-	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ","), ImageLoadBytes: *imageLoadGiB << 30, ImageLoadReserveBytes: *imageReserveGiB << 30}
+	engine := &agent.Engine{Journal: j, Docker: docker, DockerCLI: *dockerCLI, ACMEEmail: *acmeEmail, ResticCLI: *resticCLI, BackupRoots: strings.Split(*backupRoots, ","), ImageLoadBytes: *imageLoadGiB << 30, ImageLoadReserveBytes: *imageReserveGiB << 30, Stopping: ctx}
 	// A pool that can't work is refused at start, not at the first deployment.
 	if *networkPool != "" {
 		// An unparsable value is the zero prefix, which validation refuses.
