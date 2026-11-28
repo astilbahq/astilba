@@ -115,7 +115,10 @@ type Spec struct {
 
 // User is a minted user the account check found.
 type User struct {
-	Name     string
+	Name string
+	// ID is the user's IAM user ID, which IAM gives each user it creates: a user deleted and made
+	// again under the same name has another.
+	ID       string
 	Tags     map[string]string
 	Boundary string
 }
@@ -465,7 +468,7 @@ func (c *Client) Users(ctx context.Context, cred Credential, path string, limit 
 			} else if err != nil || got.User == nil {
 				return nil, err
 			}
-			user := User{Name: aws.ToString(u.UserName), Tags: map[string]string{}}
+			user := User{Name: aws.ToString(u.UserName), ID: aws.ToString(got.User.UserId), Tags: map[string]string{}}
 			if got.User.PermissionsBoundary != nil {
 				user.Boundary = aws.ToString(got.User.PermissionsBoundary.PermissionsBoundaryArn)
 			}

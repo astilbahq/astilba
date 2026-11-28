@@ -50,9 +50,8 @@ type AWS struct {
 	calls    map[string]int
 	// Lag is how many requests an access key issued from now on fails with InvalidAccessKeyId
 	// before IAM has propagated it.
-	Lag int
-	// Before runs before each call is handled, outside the fake's lock, with the call's action.
-	Before func(action string)
+	Lag    int
+	before func(action string)
 	serial int
 	// reportMissing answers a call by name on a user that doesn't exist with NoSuchEntity even
 	// for an admin confined to a path. See ReportMissingUsers.
@@ -70,10 +69,11 @@ func (a *AWS) ReportMissingUsers(report bool) {
 }
 
 type user struct {
-	name, path, boundary, account string
-	tags                          map[string]string
-	policies                      map[string]string
-	created                       time.Time
+	// id is the user's IAM user ID: a user made again under the same name gets another.
+	id, name, path, boundary, account string
+	tags                              map[string]string
+	policies                          map[string]string
+	created                           time.Time
 }
 
 type key struct {
@@ -95,7 +95,7 @@ type Credential struct{ AccessKeyID, SecretAccessKey, SessionToken string }
 func (a *AWS) AddAdmin(admin Admin) Credential {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.users[admin.Name] = &user{name: admin.Name, path: admin.Path, account: admin.Account, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
+	a.users[admin.Name] = &user{id: a.userID(), name: admin.Name, path: admin.Path, account: admin.Account, tags: map[string]string{}, policies: map[string]string{}, created: time.Now()}
 	k := a.issue(admin.Name)
 	a.admins[admin.Name] = admin
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
@@ -130,6 +130,24 @@ func (a *AWS) Fail(action string, codes ...string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.failures[action] = append(a.failures[action], codes...)
+}
+
+// Before sets a function run before each call is handled, outside the fake's lock, with the
+// call's action; nil removes it.
+func (a *AWS) Before(fn func(action string)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.before = fn
+}
+
+// hook runs the function Before set, if any.
+func (a *AWS) hook(action string) {
+	a.mu.Lock()
+	fn := a.before
+	a.mu.Unlock()
+	if fn != nil {
+		fn(action)
+	}
 }
 
 // Calls is how many times action was called.
@@ -206,7 +224,7 @@ func (a *AWS) PutObject(bucket, name string, content []byte) {
 func (a *AWS) CreateUser(name, userPath, boundary string, tags map[string]string, policy string) Credential {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.users[name] = &user{name: name, path: userPath, boundary: boundary, tags: maps.Clone(tags), policies: map[string]string{}, created: time.Now()}
+	a.users[name] = &user{id: a.userID(), name: name, path: userPath, boundary: boundary, tags: maps.Clone(tags), policies: map[string]string{}, created: time.Now()}
 	if policy != "" {
 		a.users[name].policies["policy"] = policy
 	}
@@ -220,6 +238,13 @@ func (a *AWS) IssueKey(name string) Credential {
 	defer a.mu.Unlock()
 	k := a.issue(name)
 	return Credential{AccessKeyID: k.id, SecretAccessKey: k.secret}
+}
+
+// DeleteKey deletes an access key directly, as someone with IAM rights could.
+func (a *AWS) DeleteKey(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.keys, id)
 }
 
 // MoveUser moves a user to another path, as someone with IAM rights wider than the admin policy's
@@ -240,6 +265,22 @@ func (a *AWS) DeleteUser(name string) {
 			delete(a.keys, id)
 		}
 	}
+}
+
+// UserID is a user's IAM user ID, or "".
+func (a *AWS) UserID(name string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if u := a.users[name]; u != nil {
+		return u.id
+	}
+	return ""
+}
+
+// userID is a new IAM user ID. The caller holds the lock.
+func (a *AWS) userID() string {
+	a.serial++
+	return fmt.Sprintf("AIDAFAKE%012d", a.serial)
 }
 
 func (a *AWS) issue(name string) *key {
