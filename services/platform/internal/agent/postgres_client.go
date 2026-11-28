@@ -121,7 +121,16 @@ func (e *Engine) removeHelper(helper pgClient) {
 // output ends and Docker reports the command exited 0. Stopped part way, it returns at once and
 // the command may still be running in the container, which its owner removes.
 func (e *Engine) containerExec(ctx context.Context, db pgClient, out io.Writer, command ...string) error {
-	created, err := e.Docker.ExecCreate(ctx, db.container, client.ExecCreateOptions{AttachStdout: true, Env: db.env, Cmd: command})
+	return e.containerExecInput(ctx, db, nil, out, command...)
+}
+
+// containerExecInput is containerExec with input, if any, as the command's standard input. Input
+// carries bytes as they are, where a command's arguments go through JSON. It is written while the
+// output is read, so a command that writes before it reads can't stall either, and input not all
+// written fails the command. Closing the input once written is best effort, since a command that
+// has read what it needs may already have exited.
+func (e *Engine) containerExecInput(ctx context.Context, db pgClient, input io.Reader, out io.Writer, command ...string) error {
+	created, err := e.Docker.ExecCreate(ctx, db.container, client.ExecCreateOptions{AttachStdin: input != nil, AttachStdout: true, Env: db.env, Cmd: command})
 	if err != nil {
 		return errors.New("data tool failed")
 	}
@@ -130,9 +139,24 @@ func (e *Engine) containerExec(ctx context.Context, db pgClient, out io.Writer, 
 		return errors.New("data tool failed")
 	}
 	stop := context.AfterFunc(ctx, attached.Close)
+	written := make(chan error, 1)
+	if input == nil {
+		written <- nil
+	} else {
+		go func() {
+			_, err := io.Copy(attached.Conn, input)
+			if err == nil {
+				_ = attached.CloseWrite()
+			}
+			written <- err
+		}()
+	}
 	_, err = stdcopy.StdCopy(out, io.Discard, attached.Reader)
 	stop()
 	attached.Close()
+	if writeErr := <-written; err == nil {
+		err = writeErr
+	}
 	// Docker may report the command running for a moment after its output ends.
 	for err == nil && ctx.Err() == nil {
 		v, inspectErr := e.Docker.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
