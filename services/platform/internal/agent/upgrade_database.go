@@ -17,6 +17,10 @@ import (
 
 func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domain.Application) error {
 	for _, check := range []struct{ sql, want, message string }{
+		// template0 is oid 4, which the checks below compare the other databases with. A superuser
+		// can drop it once it isn't a template, and nothing can make it again under that oid.
+		// inline-sql: reads a managed database's catalog, not the platform database.
+		{"SELECT count(*) FROM pg_database WHERE oid = 4", "1", "a cluster without template0 requires a separate recipe"},
 		// By name: a database its owner marked as a template is still one the upgrade would lose.
 		// template0 is always oid 4, so another database a superuser names template0 is one too.
 		// inline-sql: reads a managed database's catalog, not the platform database.
@@ -116,8 +120,8 @@ func (e *Engine) upgradeDatabaseChecks(ctx context.Context, db pgClient, a domai
 var localeDatabases = map[string]string{"application": "the application database", "postgres": "the postgres maintenance database", "template1": "template1"}
 
 // upgradeLocaleSQL lists, one per line as key:properties, the databases of localeDatabases whose
-// encoding or locale differs from template0's. template0 is always oid 4 and can't be dropped, so
-// it keeps what initdb gave the cluster, and the upgrade's new cluster gives every database what its
+// encoding or locale differs from template0's. template0 is always oid 4, which the checks
+// before it require, and can't be made again, so it keeps what initdb gave the cluster, and the upgrade's new cluster gives every database what its
 // own initdb chose, from the same image defaults. Before the owner model the database user is a
 // superuser and can drop template1 or postgres and create it again from template0 in another
 // encoding or locale, or do the same to the application's database from another one. The columns

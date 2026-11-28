@@ -420,6 +420,52 @@ func nativeUpgradeJourney(t *testing.T, e *Engine, journeys []upgradeJourney, ne
 					}
 					recreate(database.name, "")
 				}
+				// A cluster of its own, before the owner model, for what the source must keep: the
+				// application's database made again in another encoding, and template0, which can be
+				// dropped once it isn't a template but never made again under oid 4.
+				t.Run("legacy_cluster_locale", func(t *testing.T) {
+					created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{Config: &container.Config{Image: j.source, Env: []string{"POSTGRES_USER=app", "POSTGRES_DB=app", "POSTGRES_PASSWORD=locale-fixture-password"}, Labels: visualLabels(p, uuid.New())}, HostConfig: &container.HostConfig{NetworkMode: "none"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						_, _ = e.Docker.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+					}()
+					if _, err = e.Docker.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+						t.Fatal(err)
+					}
+					if err = e.waitPostgresStartup(ctx, created.ID, "app", "app"); err != nil {
+						t.Fatal(err)
+					}
+					legacy := a
+					legacyPG := *a.Postgres
+					legacyPG.Username, legacyPG.Database, legacyPG.Roles = "app", "app", ""
+					legacy.Postgres = &legacyPG
+					maintenance := legacy
+					maintenancePG := legacyPG
+					maintenancePG.Database = "postgres"
+					maintenance.Postgres = &maintenancePG
+					cluster := pgClient{container: created.ID}
+					if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err != nil {
+						t.Fatal("a cluster as initdb made it was refused:", err)
+					}
+					for _, statement := range []string{"DROP DATABASE app WITH (FORCE)", "CREATE DATABASE app TEMPLATE template0 ENCODING 'LATIN1' LOCALE 'C'"} {
+						if _, err = e.pgQuery(ctx, cluster, maintenance, statement); err != nil {
+							t.Fatalf("%s: %v", statement, err)
+						}
+					}
+					if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err == nil || !strings.Contains(err.Error(), "the application database (encoding, LC_COLLATE, LC_CTYPE)") {
+						t.Fatalf("the application's database made again in LATIN1 wasn't refused by name: %v", err)
+					}
+					for _, statement := range []string{"ALTER DATABASE template0 IS_TEMPLATE false", "DROP DATABASE template0"} {
+						if _, err = e.pgQuery(ctx, cluster, maintenance, statement); err != nil {
+							t.Fatalf("%s: %v", statement, err)
+						}
+					}
+					if err = e.upgradeDatabaseChecks(ctx, cluster, legacy); err == nil || !strings.Contains(err.Error(), "template0") || strings.Contains(err.Error(), "encoding or locale") {
+						t.Fatalf("a cluster without template0 wasn't refused for it: %v", err)
+					}
+				})
 				// Temporary tables go with their sessions, and the temporary schemas the sessions
 				// leave behind hold nothing; any role may make them in postgres.
 				for _, database := range []domain.Application{admin, template} {
