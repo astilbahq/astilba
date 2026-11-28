@@ -148,8 +148,7 @@ A base doesn't carry every operation the workspace ever ran. It carries the work
 configuration, unfinished work, the newest 100 operations and audit events, and a compact
 record of applied history: every runtime change committed in the 90 days before the base was
 captured, plus the change each environment had when that window opened. So a base's size
-follows the workspace's configuration, not its age, except that it keeps every erased secret
-version of the environments it carries, however old, without its value.
+follows the workspace's configuration, not its age or how many secret values were erased.
 
 - **Which backup recovery can use.** Use a management backup taken after the newest
   checkpoint's window opened. An older one is refused, with the dates, when it holds a runtime
@@ -168,9 +167,16 @@ version of the environments it carries, however old, without its value.
   operations and audit events, the final state of runtime changes and cross-host roots, and
   anything they name. Of each secret it restores the 10 newest versions, the current one and
   every version those records name, other than audit events, which name the version they record
-  without needing it. It erases again every value of a carried environment that
-  the checkpoint records as erased, so none of those retired or purged values comes back from
-  the backup, however old. Other releases, revisions, build runs and secret versions from between
+  without needing it. It erases again every value the backup holds that was erased by the time
+  the checkpoint was captured, so no retired or purged value comes back from the backup, however
+  old:
+  - every version of a retired secret, and of a purged environment;
+  - the secret copies of a preview that has ended, whether the checkpoint carries it or it ended
+    before the window, though its cleanup deleted them;
+  - every other erased version, which a checkpoint from version 23 lists as ranges of versions
+    erased one after another, and an older one carries as a row.
+
+  Other releases, revisions, build runs and secret versions from between
   the backup and the failure are lost. An operation the backup holds unfinished gets the final state the newest
   checkpoint records for it; one it records nothing for is fenced as cancelled, as before.
 - **Retired environments.** A base carries every standard environment, retired or not, and

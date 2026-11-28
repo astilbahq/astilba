@@ -340,8 +340,43 @@ func MergeRecoveryErasing(ctx context.Context, tx pgx.Tx, session *secretbroker.
 			}
 		}
 	}
+	if err := eraseDerivedSecretVersions(ctx, db.New(tx), a); err != nil {
+		return err
+	}
 	// A checkpoint from before archive version 8 brings volumes without the major they record.
 	return backfillPostgresMajors(ctx, db.New(tx), a.Workspace)
+}
+
+// eraseDerivedSecretVersions erases, after the rows are merged, every value the restored database
+// still holds that was erased by the time the base was captured, though the base carries no erased
+// row of it: a base leaves out old erased versions, ended previews and the rows a preview's end
+// deleted. An erasure is never undone, so whatever became of the row that held the value, the value
+// doesn't come back (EraseRecoveredEndedSecretVersions, EraseRecoveredSecretVersionRanges). A base
+// before recoveryErasureRanges carries its erased versions as rows instead, which the merge has
+// already taken. The values erased here are recorded as erased when the base was captured.
+func eraseDerivedSecretVersions(ctx context.Context, q *db.Queries, a Archive) error {
+	ended := db.EraseRecoveredEndedSecretVersionsParams{ErasedAt: a.CreatedAt, WorkspaceID: a.Workspace, Carried: []uuid.UUID{}}
+	var erasures []SecretErasure
+	if h := a.Recovery; h != nil && !h.WindowStart.IsZero() {
+		// The cut is the one baseSelection chose the base's previews by.
+		cut := h.WindowStart.Add(-recoveryFallbackMargin)
+		ended.Cut = &cut
+		for _, e := range h.Environments {
+			ended.Carried = append(ended.Carried, e.Environment)
+		}
+		erasures = h.Erasures
+	}
+	if err := q.EraseRecoveredEndedSecretVersions(ctx, ended); err != nil {
+		return err
+	}
+	if len(erasures) == 0 {
+		return nil
+	}
+	ranges, err := stablejson.Marshal(erasures)
+	if err != nil {
+		return err
+	}
+	return q.EraseRecoveredSecretVersionRanges(ctx, db.EraseRecoveredSecretVersionRangesParams{ErasedAt: a.CreatedAt, WorkspaceID: a.Workspace, Ranges: ranges})
 }
 
 // errErasureAccepted is a value under an environment key the restored database never had, which
