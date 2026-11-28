@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,34 +140,6 @@ func Limited(err error) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// rateLimit reads when GitHub allows requests again from a refusal under its rate limits,
-// following GitHub's guidance: retry-after when present, then the primary limit's reset, and
-// otherwise a minute. A 403 without those signals is a rate limit only if its body says so.
-func rateLimit(res *http.Response, now time.Time) (time.Time, bool) {
-	if res.StatusCode != http.StatusForbidden && res.StatusCode != http.StatusTooManyRequests {
-		return time.Time{}, false
-	}
-	until := now.Add(time.Minute)
-	if seconds, e := strconv.Atoi(res.Header.Get("Retry-After")); e == nil && seconds > 0 {
-		until = now.Add(time.Duration(seconds) * time.Second)
-	} else if reset, e := strconv.ParseInt(res.Header.Get("X-RateLimit-Reset"), 10, 64); e == nil && res.Header.Get("X-RateLimit-Remaining") == "0" {
-		until = time.Unix(reset, 0)
-	} else if res.StatusCode == http.StatusForbidden {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		if !strings.Contains(strings.ToLower(string(body)), "rate limit") {
-			return time.Time{}, false
-		}
-	}
-	// GitHub's limits reset within the hour, so a later time is a header to distrust.
-	if until.Before(now.Add(time.Second)) {
-		until = now.Add(time.Second)
-	}
-	if until.After(now.Add(time.Hour)) {
-		until = now.Add(time.Hour)
-	}
-	return until, true
-}
-
 // appRequest makes a request as the App itself. Once GitHub limits one, the others wait out the
 // same time without asking, since asking again while limited can get an App blocked.
 func (c *Client) appRequest(ctx context.Context, method, path string, body, out any) error {
@@ -194,6 +165,11 @@ func (c *Client) appRequest(ctx context.Context, method, path string, body, out 
 }
 
 func Revoked(err error) bool { return errors.Is(err, errRevoked) }
+
+// ErrRepositoryChanged is Validate's error when GitHub names the repository differently, with
+// another ID, or with another visibility than the connection recorded.
+var ErrRepositoryChanged = errors.New("GitHub repository identity or visibility changed")
+
 func (c *Client) request(ctx context.Context, method, origin, path, token string, body any, out any) error {
 	var reader io.Reader
 	content := "application/json"
@@ -219,11 +195,14 @@ func (c *Client) request(ctx context.Context, method, origin, path, token string
 	}
 	res, e := c.http.Do(req)
 	if e != nil {
+		if status, moved := outbound.Moved(res); moved {
+			return &APIError{status}
+		}
 		return errors.New("GitHub request failed")
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		if until, limited := rateLimit(res, time.Now()); limited {
+		if until, limited := outbound.RateLimit(res, time.Now()); limited {
 			return &RateLimited{Until: until}
 		}
 		return &APIError{res.StatusCode}
@@ -423,7 +402,7 @@ func (c *Client) Validate(ctx context.Context, installation, repository, generat
 				err = fmt.Errorf("%w: %w", ErrTokenRejected, err)
 			}
 			if err == nil && (repo.ID != repository || repo.FullName != name || repo.Private != private) {
-				err = errors.New("GitHub repository identity or visibility changed")
+				err = ErrRepositoryChanged
 			}
 		}
 	}
