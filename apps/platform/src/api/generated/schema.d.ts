@@ -2059,7 +2059,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it and never revoked here. Each raises a backup_peer_user alert until the owner acknowledges it by name. Needs recent authentication. */
+        /** @description Lists another installation that shares this account after a workspace transfer, so its users are shown as managed by it. Each with the account's permissions boundary raises a backup_peer_user alert until the owner acknowledges it by name, and once acknowledged is never revoked here. Needs recent authentication. */
         post: operations["AddBackupStorageAccountPeer"];
         delete?: never;
         options?: never;
@@ -2076,7 +2076,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Revokes an IAM user the account check found under this workspace's path with no record here. Its access is taken away and the user deleted at AWS. Needs recent authentication. */
+        /** @description Revokes an IAM user the account check found under this workspace's path with no record here. Its access is taken away and the user deleted at AWS. A peer installation's user can be revoked only while it isn't acknowledged, since that installation may still use its key. Audited as backup.key.revoke, naming the user's new key record. Needs recent authentication. */
         post: operations["RevokeFoundBackupStorageUser"];
         delete?: never;
         options?: never;
@@ -2093,7 +2093,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Acknowledges an IAM user the account check found tagged with a peer installation as that installation's, which clears the backup_peer_user alert it raised. The acknowledgement covers the user's IAM user ID and the access keys it has now: a user made again under the same name, or given another access key, raises the alert again. Needs recent authentication. */
+        /** @description Acknowledges an IAM user the account check found tagged with a peer installation as that installation's, which clears the backup_peer_user alert it raised. The acknowledgement covers the user's IAM user ID and the access keys it has now: a user made again under the same name, or given another access key, raises the alert again. Refused if an acknowledgement already covers the user as the latest check found it. Audited as backup.key.acknowledge, naming the acknowledgement's own record. Needs recent authentication. */
         post: operations["AcknowledgeFoundBackupStorageUser"];
         delete?: never;
         options?: never;
@@ -4927,7 +4927,7 @@ export interface components {
         BackupStorageFoundUser: {
             /**
              * Format: uuid
-             * @description The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert names it as its resource. The nil UUID for a user management is revoking that the latest check didn't report, since its record makes it known.
+             * @description The user's identity under this account, from its name and IAM user ID. A backup_peer_user alert names it as its resource. The nil UUID until a check records it: for a user management is revoking, which the check no longer reports since its record makes it known, or in a report from before identities were recorded.
              */
             id: string;
             userName: string;
