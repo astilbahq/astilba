@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
@@ -198,8 +199,9 @@ func carriesEnvironment(t *testing.T, base portability.Archive, env uuid.UUID) b
 // its copies of its template's secret values, whether by its cleanup or by revoking its preview
 // host (DeleteEnvironmentSecretVersions), or when its request is given a new environment. So no
 // base has a row of those values. Recovery from a backup taken before any of that, by a base of
-// either format, still leaves none of them with a value, and keeps the values of a preview that
-// is still open.
+// either format, still leaves none of them with a value. It keeps the values of every preview still
+// open: one opened after the base's selection cut, one opened before it, and one the restored
+// database opened after the base was captured, which the base doesn't carry.
 func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 	f := setup(t)
 	b, ws, _ := secretEnvironment(t, f)
@@ -207,6 +209,7 @@ func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 	previews := seedPreviews(t, f, b, ws, server.Server.Id)
 	moved, movedEnv, _ := openPreview(t, f, b, ws, previews, 9)
 	_, openEnv, open := openPreview(t, f, b, ws, previews, 10)
+	_, acrossEnv, across := openPreview(t, f, b, ws, previews, 11)
 	// The preview that ended long before the window, the one whose secret rows its cleanup or its
 	// host's revocation deleted inside the window, and the one whose request moved on.
 	old, deleted := previews.envs[0], previews.envs[1]
@@ -221,7 +224,7 @@ func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 		restoreStatement{`DELETE FROM secret_versions v USING secrets s WHERE s.id=v.secret_id AND s.environment_id=ANY($1)`, []any{ended}},
 		restoreStatement{`DELETE FROM secrets WHERE environment_id=ANY($1)`, []any{ended}},
 		restoreStatement{`UPDATE preview_requests SET state='deleted',updated_at=now()-interval '200 days' WHERE id=$1`, []any{previews.requests[0]}},
-		restoreStatement{`UPDATE environments SET created_at=now()-interval '200 days' WHERE id=$1`, []any{old}},
+		restoreStatement{`UPDATE environments SET created_at=now()-interval '200 days' WHERE id=ANY($1)`, []any{[]uuid.UUID{old, acrossEnv}}},
 		restoreStatement{`UPDATE preview_requests SET state='deleted',released_by_revocation=true,updated_at=now() WHERE id=$1`, []any{previews.requests[1]}},
 	)
 	// The moved request's next generation gets an environment of its own.
@@ -233,13 +236,16 @@ func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 	)
 
 	base := capturedBase(t, f, ws)
-	if carriesEnvironment(t, base, old) || !carriesEnvironment(t, base, deleted) || !carriesEnvironment(t, base, movedEnv) {
+	if carriesEnvironment(t, base, old) || !carriesEnvironment(t, base, deleted) || !carriesEnvironment(t, base, movedEnv) || !carriesEnvironment(t, base, acrossEnv) {
 		t.Fatal("the base doesn't carry the previews the fixture expects")
 	}
-	if !rowExists(t, f, `SELECT 1 FROM environments WHERE id=$1 AND created_at<$2`, old, base.Recovery.WindowStart) {
-		t.Fatal("the old preview was created inside the base's window")
+	if n := claimCounter(t, f, `SELECT count(*) FROM environments WHERE id=ANY($1) AND created_at<$2`, []uuid.UUID{old, acrossEnv}, base.Recovery.WindowStart.Add(-8*24*time.Hour)); n != 2 {
+		t.Fatal("a preview the fixture backdated was created after the base's selection cut")
 	}
 	restoreRows(t, f, backup...)
+	// The restored database opened a preview after the base was captured.
+	_, newerEnv, newer := openPreview(t, f, b, ws, previews, 12)
+	live := map[uuid.UUID]uuid.UUID{openEnv: open.Id, acrossEnv: across.Id, newerEnv: newer.Id}
 	if n := claimCounter(t, f, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=ANY($1) AND v.encrypted_value IS NOT NULL`, ended); n != 3 {
 		t.Fatal("the restored backup holds", n, "of the ended previews' values")
 	}
@@ -251,8 +257,10 @@ func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 					t.Errorf("recovery with a %s base brought back %d of an ended preview's values", format, n)
 				}
 			}
-			if n := txCount(t, tx, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.id=$2 AND v.encrypted_value IS NOT NULL`, openEnv, open.Id); n != 1 {
-				t.Errorf("recovery with a %s base erased an open preview's value", format)
+			for env, version := range live {
+				if n := txCount(t, tx, `SELECT count(*) FROM secret_versions v JOIN secrets s ON s.id=v.secret_id WHERE s.environment_id=$1 AND v.id=$2 AND v.encrypted_value IS NOT NULL`, env, version); n != 1 {
+					t.Errorf("recovery with a %s base erased an open preview's value", format)
+				}
 			}
 		})
 	}
@@ -263,7 +271,7 @@ func TestRecoveryFromAnOlderBackupKeepsEndedPreviewSecretsErased(t *testing.T) {
 // the versions an export carries, and lists the other erased versions of live secrets as ranges
 // in their secret's order, so more erasures add nothing to it. Recovery from a backup taken before
 // them all still erases every value, with the new format's ranges or a version 22 base's rows, and
-// keeps every live value.
+// keeps every live value, including those beside an erased one and one made after the capture.
 func TestRecoveryBasesDeriveErasuresRatherThanCarryThem(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)
@@ -379,6 +387,7 @@ func TestRecoveryBasesDeriveErasuresRatherThanCarryThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	olderFirst := olderFormat(t, f, ws, first)
 
 	// Retiring four more old versions joins TOKEN's ranges into one, and adds no row.
 	erase(tokens[15], tokens[16], tokens[18], tokens[19])
@@ -405,15 +414,26 @@ func TestRecoveryBasesDeriveErasuresRatherThanCarryThem(t *testing.T) {
 	if n := claimCounter(t, f, `SELECT count(*) FROM secret_versions WHERE id=ANY($1) AND encrypted_value IS NULL`, all); n != 0 {
 		t.Fatal("the restored backup holds erased versions:", n)
 	}
+	// It also holds a version of TOKEN made after both bases were captured.
+	var later api.SecretVersion
+	b.call("POST", path+"/secrets/"+token.String()+"/versions", map[string]string{"value": "TOKEN-canary-later"}, 201, &later)
+	// Each base erases what was erased when it was captured, and keeps every live value: those
+	// between and beside its ranges, and the one made after it.
+	firstErased := slices.Concat(tokens[:15], tokens[17:18], recents[:1], retireds, purgeds)
+	firstLive := slices.Concat(tokens[15:17], tokens[18:], recents[1:], []uuid.UUID{later.Id})
 	erased := slices.Concat(tokens[:20], recents[:1], retireds, purgeds)
-	live := slices.Concat(tokens[20:], recents[1:])
-	for format, recovered := range map[string]portability.Archive{"new": base, "version 22": older} {
-		inRecovery(t, f, ws, recovered, func(tx pgx.Tx) {
-			if n := txCount(t, tx, `SELECT count(*) FROM secret_versions WHERE id=ANY($1) AND (encrypted_value IS NOT NULL OR erased_at IS NULL)`, erased); n != 0 {
-				t.Errorf("recovery with a %s base brought back %d erased values", format, n)
+	live := slices.Concat(tokens[20:], recents[1:], []uuid.UUID{later.Id})
+	for _, c := range []struct {
+		format       string
+		base         portability.Archive
+		erased, live []uuid.UUID
+	}{{"first new", first, firstErased, firstLive}, {"first version 22", olderFirst, firstErased, firstLive}, {"new", base, erased, live}, {"version 22", older, erased, live}} {
+		inRecovery(t, f, ws, c.base, func(tx pgx.Tx) {
+			if n := txCount(t, tx, `SELECT count(*) FROM secret_versions WHERE id=ANY($1) AND (encrypted_value IS NOT NULL OR erased_at IS NULL)`, c.erased); n != 0 {
+				t.Errorf("recovery with a %s base brought back %d erased values", c.format, n)
 			}
-			if n := txCount(t, tx, `SELECT count(*) FROM secret_versions WHERE id=ANY($1) AND encrypted_value IS NOT NULL`, live); n != int64(len(live)) {
-				t.Errorf("recovery with a %s base kept %d of %d live values", format, n, len(live))
+			if n := txCount(t, tx, `SELECT count(*) FROM secret_versions WHERE id=ANY($1) AND encrypted_value IS NOT NULL`, c.live); n != int64(len(c.live)) {
+				t.Errorf("recovery with a %s base kept %d of %d live values", c.format, n, len(c.live))
 			}
 		})
 	}
