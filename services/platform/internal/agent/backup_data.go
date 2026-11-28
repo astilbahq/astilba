@@ -19,6 +19,7 @@ import (
 	"github.com/astilbahq/astilba/services/platform/internal/deployment"
 	"github.com/astilbahq/astilba/services/platform/internal/domain"
 	"github.com/astilbahq/astilba/services/platform/internal/execution"
+	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -200,26 +201,40 @@ func (e *Engine) quiesceFiles(ctx context.Context, s *scheduleState) error {
 	}
 	return nil
 }
+
+// writerResumeTimeout bounds resuming the writers a backup stopped, which it does however
+// its run ended. Docker starts one in well under a second, but a loaded host's Docker has
+// taken more than thirty seconds. A writer left stopped keeps its application down, and
+// holds back every other operation on the host until the run is resolved. A backup
+// command has ten minutes past its run's own timeout for this.
+const writerResumeTimeout = 5 * time.Minute
+
+// resumeBackupWriters starts again each writer s stopped. One that cannot start keeps no
+// other stopped, and all stay recorded until every one runs, so resuming again starts
+// those still stopped.
 func (e *Engine) resumeBackupWriters(ctx context.Context, s *scheduleState) error {
+	var failed error
 	for _, id := range s.Writers {
 		c, err := e.Docker.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
-		if err != nil || !visualOwned(c.Container.Config.Labels, s.Installation.Policy.Plan) {
-			return errors.New("stopped writer identity changed")
+		if errdefs.IsNotFound(err) || (err == nil && !visualOwned(c.Container.Config.Labels, s.Installation.Policy.Plan)) {
+			err = errors.New("stopped writer identity changed")
 		}
-		if !c.Container.State.Running {
-			if _, err = e.Docker.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
-				return err
-			}
+		if err == nil && !c.Container.State.Running {
+			_, err = e.Docker.ContainerStart(ctx, id, client.ContainerStartOptions{})
 		}
+		failed = errors.Join(failed, err)
+	}
+	if failed != nil {
+		return failed
 	}
 	s.Writers = nil
 	return e.Journal.saveSchedule(*s)
 }
 func (e *Engine) dumpFiles(ctx context.Context, s *scheduleState, stage string, m *backup.Manifest) (err error) {
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resume, cancel := context.WithTimeout(context.WithoutCancel(ctx), writerResumeTimeout)
 		defer cancel()
-		err = errors.Join(err, e.resumeBackupWriters(cleanup, s))
+		err = errors.Join(err, e.resumeBackupWriters(resume, s))
 	}()
 	if err = e.quiesceFiles(ctx, s); err != nil {
 		return err

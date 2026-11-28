@@ -17,9 +17,15 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// routeProbeName is the container that sends a round of route probes. The engine lock
-// keeps to one round at a time.
-const routeProbeName = "astilba-route-probe"
+// routeProbeName is the container that sends a round of server's route probes. The engine
+// lock keeps to one round at a time. The name is the server's own, so a probe another
+// server's agent left in this Docker, as one enrolled on the machine before might have,
+// never holds up this server's rounds, and this agent never has to remove it.
+func routeProbeName(server string) string { return "astilba-route-probe-" + server }
+
+// routeProbeCleanup bounds creating and removing a probe container outside its round, and
+// waiting for Docker to finish removing one.
+const routeProbeCleanup = 30 * time.Second
 
 // routeProbeScript sends each probe in turn as the proxy does, once and reading no body,
 // and kills it after $1 seconds, since wget's own timeout only bounds each read. With $2
@@ -66,18 +72,24 @@ func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (f
 	if err != nil {
 		return nil, nil, err
 	}
+	server := cfg.ServerID.String()
 	cleanup := context.WithoutCancel(ctx)
-	if err = e.removeRouteProbe(ctx, cleanup, cfg.ServerID.String()); err != nil {
+	if err = e.removeRouteProbe(ctx, cleanup, server); err != nil {
 		return nil, nil, err
 	}
 	limit := strconv.Itoa(int(deployment.PoolHealthTimeout / time.Second))
-	created, err := e.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Name: routeProbeName,
+	// Docker goes on creating a container once its client stops waiting, and AutoRemove
+	// never takes one that never started, so a round that ctx ended mid-create would leave
+	// its probe behind. The create outlasts ctx so that the round learns what to remove. One
+	// that outlasts even its bound is removed by the server's next round.
+	create, stopCreate := context.WithTimeout(cleanup, routeProbeCleanup)
+	created, err := e.Docker.ContainerCreate(create, client.ContainerCreateOptions{
+		Name: routeProbeName(server),
 		Config: &container.Config{
 			Image:        proxy.Container.Image,
 			Entrypoint:   []string{"sh", "-c", routeProbeScript, "probe"},
 			Cmd:          append([]string{limit, mode}, probes...),
-			Labels:       map[string]string{labelServer: cfg.ServerID.String(), labelKind: "route-probe-v1"},
+			Labels:       map[string]string{labelServer: server, labelKind: "route-probe-v1"},
 			AttachStdout: true,
 			AttachStderr: true,
 		},
@@ -90,13 +102,14 @@ func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (f
 			Resources:      container.Resources{Memory: 32 << 20, NanoCPUs: 500_000_000, PidsLimit: ptr(int64(16))},
 		},
 	})
+	stopCreate()
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() {
-		remove, cancel := context.WithTimeout(cleanup, 30*time.Second)
+		remove, cancel := context.WithTimeout(cleanup, routeProbeCleanup)
 		defer cancel()
-		if _, removeErr := e.Docker.ContainerRemove(remove, created.ID, client.ContainerRemoveOptions{Force: true}); removeErr != nil && !errdefs.IsNotFound(removeErr) && !errdefs.IsConflict(removeErr) && err == nil {
+		if removeErr := e.removeProbe(remove, created.ID); removeErr != nil && err == nil {
 			err = removeErr
 		}
 	}()
@@ -168,9 +181,10 @@ func (e *Engine) runProbes(ctx context.Context, probes []string, mode string) (f
 	return failed, errOut.Bytes(), nil
 }
 
-// removeRouteProbe removes a probe container an interrupted round left, if it is one.
+// removeRouteProbe removes the probe container an interrupted round of server left, if it
+// is one. A container under its name that is not server's probe stays, and no round runs.
 func (e *Engine) removeRouteProbe(ctx, cleanup context.Context, server string) error {
-	v, err := e.Docker.ContainerInspect(ctx, routeProbeName, client.ContainerInspectOptions{})
+	v, err := e.Docker.ContainerInspect(ctx, routeProbeName(server), client.ContainerInspectOptions{})
 	if errdefs.IsNotFound(err) {
 		return nil
 	}
@@ -180,8 +194,34 @@ func (e *Engine) removeRouteProbe(ctx, cleanup context.Context, server string) e
 	if v.Container.Config.Labels[labelServer] != server || v.Container.Config.Labels[labelKind] != "route-probe-v1" {
 		return errors.New("route probe ownership conflict")
 	}
-	if _, err = e.Docker.ContainerRemove(cleanup, v.Container.ID, client.ContainerRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) && !errdefs.IsConflict(err) {
+	remove, cancel := context.WithTimeout(cleanup, routeProbeCleanup)
+	defer cancel()
+	return e.removeProbe(remove, v.Container.ID)
+}
+
+// removeProbe removes the probe container id and returns once Docker has. While
+// AutoRemove is removing it Docker refuses another removal, and the name stays taken
+// until AutoRemove ends, so the round waits for that.
+func (e *Engine) removeProbe(ctx context.Context, id string) error {
+	_, err := e.Docker.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true})
+	if err == nil || errdefs.IsNotFound(err) {
+		return nil
+	}
+	if !errdefs.IsConflict(err) {
 		return err
 	}
-	return nil
+	wait := e.Docker.ContainerWait(ctx, id, client.ContainerWaitOptions{Condition: container.WaitConditionRemoved})
+	select {
+	case result := <-wait.Result:
+		// AutoRemove failed, and the container is left for the server's next round.
+		if result.Error != nil {
+			return errors.New(result.Error.Message)
+		}
+		return nil
+	case err = <-wait.Error:
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
 }
