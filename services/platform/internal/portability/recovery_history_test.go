@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,22 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 			}
 			environments = append(environments, start)
 		}
-		return &RecoveryHistory{WindowStart: base.CreatedAt.Add(-RecoveryWindowTarget), TargetDays: 90, Environments: environments, Applied: []AppliedEntry{entry(3), entry(4)}, Settled: []SettledOperation{}, Superseded: []SupersededBase{}}
+		return &RecoveryHistory{WindowStart: base.CreatedAt.Add(-RecoveryWindowTarget), TargetDays: 90, Environments: environments, Applied: []AppliedEntry{entry(3), entry(4)}, Settled: []SettledOperation{}, Superseded: []SupersededBase{}, Erasures: []SecretErasure{}}
+	}
+	// A live and a retired secret, and ranges of the live one's versions in order.
+	secret, retired := uuid.New(), uuid.New()
+	base.Tables = maps.Clone(base.Tables)
+	for _, s := range []struct {
+		id      uuid.UUID
+		retired any
+	}{{secret, nil}, {retired, base.CreatedAt}} {
+		base.Tables["secrets"] = append(base.Tables["secrets"], Row{"workspace_id": marshalValue(base.Workspace), "environment_id": marshalValue(env), "id": marshalValue(s.id), "name": marshalValue("S" + s.id.String()[:4]), "retired_at": marshalValue(s.retired)})
+	}
+	position := func(days int, id byte) VersionPosition {
+		return VersionPosition{CreatedAt: base.CreatedAt.Add(-time.Duration(days) * 24 * time.Hour), ID: uuid.UUID{id}}
+	}
+	ranges := func() []SecretErasure {
+		return []SecretErasure{{Secret: secret, First: position(30, 1), Last: position(20, 2)}, {Secret: secret, First: position(10, 3), Last: position(10, 3)}}
 	}
 	decode := func(a Archive, recovery bool) error {
 		encoded, err := stablejson.Marshal(a)
@@ -72,6 +88,7 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 		return err
 	}
 	base.Recovery = valid()
+	base.Recovery.Erasures = ranges()
 	if err := decode(base, true); err != nil {
 		t.Fatal("a valid recovery base was refused", err)
 	}
@@ -96,6 +113,7 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 		older.Version, older.Recovery, older.Tables = c.version, valid(), maps.Clone(base.Tables)
 		if c.version < RecoveryArchiveVersion {
 			withoutVersionThirteen(older)
+			older.Recovery.Erasures = nil
 		}
 		older.Tables["preview_requests"] = request(c.released)
 		if err := decode(older, true); (err == nil) != c.valid {
@@ -125,9 +143,20 @@ func TestRecoverySectionIsCheckedAgainstItsBase(t *testing.T) {
 		"settled while unfinished": func(a *Archive) {
 			a.Recovery.Settled = []SettledOperation{{Operation: uuid.New(), State: "running", EndedAt: a.CreatedAt}}
 		},
+		"no erasures":                  func(a *Archive) { a.Recovery.Erasures = nil },
+		"erasures on an older base":    func(a *Archive) { a.Version = 22 },
+		"erasure of an unknown secret": func(a *Archive) { a.Recovery.Erasures[0].Secret = uuid.New() },
+		"erasure of a retired secret":  func(a *Archive) { a.Recovery.Erasures[0].Secret = retired },
+		"erasure ending before it starts": func(a *Archive) {
+			a.Recovery.Erasures[0].First, a.Recovery.Erasures[0].Last = a.Recovery.Erasures[0].Last, a.Recovery.Erasures[0].First
+		},
+		"overlapping erasures":  func(a *Archive) { a.Recovery.Erasures[1].First = position(25, 9) },
+		"erasures out of order": func(a *Archive) { slices.Reverse(a.Recovery.Erasures) },
+		"erasure without an ID": func(a *Archive) { a.Recovery.Erasures[1].Last.ID = uuid.Nil },
 	} {
 		altered := base
 		altered.Recovery = valid()
+		altered.Recovery.Erasures = ranges()
 		change(&altered)
 		if decode(altered, true) == nil {
 			t.Errorf("%s was accepted", name)

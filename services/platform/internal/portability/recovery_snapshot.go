@@ -74,13 +74,21 @@ func CaptureRecoveryBase(ctx context.Context, tx pgx.Tx, ws uuid.UUID, window ti
 			if archive, size, count, err = captureTables(ctx, tx, archive, filters, true); err != nil {
 				return RecoveryCapture{}, err
 			}
+			if history.Erasures, err = baseSecretErasures(ctx, tx, ws, archive.CreatedAt.Add(-recoveryFallbackMargin)); err != nil {
+				return RecoveryCapture{}, err
+			}
+			erasures, err := stablejson.Marshal(history.Erasures)
+			if err != nil {
+				return RecoveryCapture{}, err
+			}
+			size += len(erasures)
 			if history.Superseded, err = recoverySuperseded(ctx, tx, ws); err != nil {
 				return RecoveryCapture{}, err
 			}
 			selected = start
 		}
 		environments := len(archive.Tables["environments"])
-		records := maxArchiveRecords - count - len(history.Superseded) - 2*environments - over
+		records := maxArchiveRecords - count - len(history.Superseded) - len(history.Erasures) - 2*environments - over
 		bytes := (MaxArchiveBytes-size)/recoveryEntryBytes - len(history.Superseded) - environments - over
 		limit := min(records, bytes)
 		if changes != AllChanges {
