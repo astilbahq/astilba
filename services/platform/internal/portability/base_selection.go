@@ -35,7 +35,7 @@ import (
 // (eraseDerivedSecretVersions): every version of a retired secret or a purged environment, those
 // of a preview that has ended, and the erased versions of the other carried secrets, which the
 // recovery section lists as ranges (baseSecretErasures). So the base doesn't carry every erased
-// version as a row, and it doesn't grow with how many were erased.
+// version as a row, and it doesn't grow with how many were erased more than a week before capture.
 //
 // Operations that changed a runtime travel as the recovery section's applied history instead
 // (RecoveryHistory), and roots and runtime changes that ended inside the window as its settled
@@ -82,8 +82,8 @@ const baseSeeds = `INSERT INTO archive_keep(kind,id) SELECT DISTINCT kind,id FRO
 // can't tell from the base's rows alone: those of secrets not retired, in environments not purged,
 // as a capture has just chosen them (archive_keep). Each range is a run of versions erased one
 // after another in their secret's order, and a range whose every version the base carries as a row
-// is left out. So the ranges number at most one more than the live versions between them, whatever
-// was erased.
+// is left out. So a secret's ranges number at most one more than the live versions between them,
+// plus one for each erased version created in the week before capture, below.
 //
 // A version committed after the capture can't be among the base's, but recovery reads a range as
 // erasing everything inside it. A version's creation time is that of its transaction, which is

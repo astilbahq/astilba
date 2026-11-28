@@ -148,7 +148,8 @@ A base doesn't carry every operation the workspace ever ran. It carries the work
 configuration, unfinished work, the newest 100 operations and audit events, and a compact
 record of applied history: every runtime change committed in the 90 days before the base was
 captured, plus the change each environment had when that window opened. So a base's size
-follows the workspace's configuration, not its age or how many secret values were erased.
+follows the workspace's configuration, not its age or how many secret values were erased more
+than a week before it was captured.
 
 - **Which backup recovery can use.** Use a management backup taken after the newest
   checkpoint's window opened. An older one is refused, with the dates, when it holds a runtime

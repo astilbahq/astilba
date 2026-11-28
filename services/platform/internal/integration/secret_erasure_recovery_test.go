@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	db "github.com/astilbahq/astilba/services/platform/db/generated"
 	"github.com/astilbahq/astilba/services/platform/internal/api"
 	"github.com/astilbahq/astilba/services/platform/internal/portability"
 	"github.com/astilbahq/astilba/services/platform/internal/stablejson"
@@ -91,8 +92,9 @@ func restoreRows(t *testing.T, f *fixture, backups ...backupRows) {
 	replicaExec(t, f, statements...)
 }
 
-// inRecovery merges base over the database in a transaction it rolls back, after check reads the
-// result, so one restored database can be recovered with several bases.
+// inRecovery merges base over the database, and deletes the copies of each preview no open request
+// names as RecoverCrossHost does next, in a transaction it rolls back after check reads the result,
+// so one restored database can be recovered with several bases.
 func inRecovery(t *testing.T, f *fixture, ws uuid.UUID, base portability.Archive, check func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
@@ -102,6 +104,9 @@ func inRecovery(t *testing.T, f *fixture, ws uuid.UUID, base portability.Archive
 	}
 	defer tx.Rollback(ctx)
 	if err = portability.MergeRecovery(ctx, tx, recoverKeys(t, f.st, ws), base, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.New(tx).DeleteEndedPreviewSecretVersions(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
 	check(tx)

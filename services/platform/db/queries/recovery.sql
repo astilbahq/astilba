@@ -404,17 +404,18 @@ SELECT id,command FROM execution_operations WHERE workspace_id = @workspace_id A
 -- name: EraseRecoveredEndedSecretVersions :exec
 -- After a recovery merge, erases each value the restored database holds that retiring or purging
 -- erased, or that ending a preview deleted: every version of a retired secret or of a purging or
--- purged environment, and of a preview that no open request names or that the base leaves out
--- (carried) although it was created before the base's selection cut (cut). Every preview created
--- after the cut, or live at capture, is carried, so such a preview had ended. Without a cut, the
--- archive has no window and the last rule is skipped.
+-- purged environment, and of a preview that the base leaves out (carried) although it was created
+-- before the base's selection cut (cut). Every preview created after the cut, or live at capture,
+-- is carried, so such a preview had ended, though the restored database can still name it in an
+-- open request. Recovery deletes the copies of a preview no open request names afterwards
+-- (DeleteEndedPreviewSecretVersions). Without a cut, the archive has no window and the last rule
+-- is skipped.
 UPDATE secret_versions v SET encrypted_value = NULL,plaintext_bytes = NULL,json_bytes = NULL,
  erased_at = COALESCE(s.retired_at,e.purged_at,sqlc.arg(erased_at)::timestamptz)
 FROM secrets s JOIN environments e ON e.workspace_id = s.workspace_id AND e.id = s.environment_id
 WHERE v.workspace_id = @workspace_id AND s.workspace_id = v.workspace_id AND s.id = v.secret_id AND v.erased_at IS NULL
- AND (s.retired_at IS NOT NULL OR e.state IN ('purging','purged') OR e.purpose = 'preview' AND (
-  NOT EXISTS (SELECT 1 FROM preview_requests r WHERE r.workspace_id = e.workspace_id AND r.environment_id = e.id AND r.state <> 'deleted')
-  OR e.created_at < sqlc.narg(cut)::timestamptz AND e.id <> ALL(sqlc.arg(carried)::uuid[])));
+ AND (s.retired_at IS NOT NULL OR e.state IN ('purging','purged')
+  OR e.purpose = 'preview' AND e.created_at < sqlc.narg(cut)::timestamptz AND e.id <> ALL(sqlc.arg(carried)::uuid[]));
 
 -- name: EraseRecoveredSecretVersionRanges :exec
 -- After a recovery merge, erases each value the restored database holds of a version inside one
