@@ -963,9 +963,8 @@ app lists:
 - each preview template's 100 preview requests;
 - the newest 100 audit events and build artifacts;
 - everything those name, including the build artifacts a configuration uses;
-- of each secret, its 10 newest versions and every version something the export carries names:
-  the draft and applied revisions, listed revisions and releases, plans, unfinished operations,
-  previews and upgrades.
+- of each secret, its 10 newest versions, its current version, and every version anything else the
+  export carries names, such as a revision, release, plan, operation, preview or upgrade.
 
 A submission still waiting is imported as failed, since its attempts stay behind; submit the draft
 again. So an export grows with the workspace's configuration, not its age, even for a secret that
@@ -978,10 +977,10 @@ Audit history beyond the newest 100 stays in the source installation's database.
 A cross-host recovery checkpoint carries the workspace's configuration, unfinished work, the
 newest 100 operations and audit events, the revisions the app lists or a record names, and a
 compact record of the runtime changes committed in the 90 days before it was captured. Of each
-secret it carries the 10 newest versions, every version something it carries names, and every
-erased version, without its value, so recovering from a backup that still holds a retired or
-purged value erases it again. Its size
-follows the configuration, not the workspace's age. A busy workspace whose history doesn't fit
+secret of the environments it carries, it carries the versions an export would keep by the same
+rules and every erased version, without its value, so recovering from a backup that still holds a
+retired or purged value erases it again. Its size follows the configuration, not the workspace's
+age, except for those erased versions, which it keeps however old. A busy workspace whose history doesn't fit
 gets a shorter window, and management warns while it is under 35 days. Checkpoints are compressed
 with zstd. Cross-host recovery can use a management backup taken after the newest checkpoint's
 window opened, which the Workspace page shows; [Recovering management from an older

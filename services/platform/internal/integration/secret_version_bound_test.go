@@ -75,7 +75,8 @@ func unresolvedReferences(t *testing.T, f *fixture, ws uuid.UUID) []uuid.UUID {
 // Automation that sets a secret on every deploy used to grow every export and recovery base by a
 // version each time. Of each secret they now carry its newest 10 versions and every version a
 // carried row names: here the applied revision, the draft, a queued deployment and an operation's
-// note, which stands for any shape a row may name one in. A base also carries every erased version,
+// note, which stands for any shape a row may name one in, and its current version, even when it is
+// older than those. A base also carries every erased version,
 // however old, so recovering from a backup that still holds the value erases it again. An import and
 // a recovery from them leave no revision naming a missing version.
 func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
@@ -115,6 +116,18 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	// A secret with fewer versions than the bound keeps them all.
 	var other api.SecretVersion
 	b.call("POST", path+"/secrets", map[string]string{"name": "OTHER", "value": "unbounded-other-canary"}, 201, &other)
+	// A recovery that accepted the loss of a key erases the newer versions it held, which can leave
+	// a secret's current version older than its newest 10.
+	rotated := make([]uuid.UUID, 12)
+	var firstRotated api.SecretVersion
+	b.call("POST", path+"/secrets", map[string]string{"name": "ROTATED", "value": "rotated-version-canary-0"}, 201, &firstRotated)
+	rotated[0] = firstRotated.Id
+	for i := 1; i < len(rotated); i++ {
+		var v api.SecretVersion
+		b.call("POST", path+"/secrets/"+firstRotated.SecretId.String()+"/versions", map[string]string{"value": fmt.Sprintf("rotated-version-canary-%d", i)}, 201, &v)
+		rotated[i] = v.Id
+	}
+	exec(`UPDATE secret_versions SET encrypted_value=NULL,plaintext_bytes=NULL,json_bytes=NULL,erased_at=now() WHERE id=ANY($1)`, rotated[1:])
 
 	server, input, token := enrollment(t, f, b, ws, "deployment")
 	yes := true
@@ -185,7 +198,7 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	if !slices.Equal(listedIDs(t, f, `SELECT id FROM secret_versions WHERE secret_id=$1 ORDER BY created_at DESC,id DESC LIMIT 10`, first.SecretId), newestFirst) {
 		t.Fatal("the fixture's versions were not made in order")
 	}
-	exported := sortedIDs(append(slices.Clone(newest), versions[0], versions[1], versions[3], versions[5], other.Id)...)
+	exported := sortedIDs(append(append(slices.Clone(newest), rotated[len(rotated)-portability.SecretVersionsKept:]...), versions[0], versions[1], versions[3], versions[5], other.Id, rotated[0])...)
 	audited := func(a portability.Archive, id uuid.UUID) bool {
 		for _, row := range a.Tables["audit_events"] {
 			if string(row["resource_id"]) == `"`+id.String()+`"` {
@@ -197,7 +210,7 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 
 	// A recovery base carries the newest 10, the named versions and every erased one.
 	base := capturedBase(t, f, ws)
-	if got, want := archivedVersions(t, base), sortedIDs(append(slices.Clone(exported), versions[2], versions[4])...); !slices.Equal(got, want) {
+	if got, want := archivedVersions(t, base), sortedIDs(append(slices.Clone(exported), versions[2], versions[4], rotated[1])...); !slices.Equal(got, want) {
 		t.Fatalf("a recovery base carried versions %v, want %v", got, want)
 	}
 
@@ -243,8 +256,10 @@ func TestArchivesCarryTheNewestAndNamedSecretVersions(t *testing.T) {
 	if missing := unresolvedReferences(t, destination, ws); len(missing) != 0 {
 		t.Fatal("an imported revision names a version the import lacks", missing)
 	}
-	if !rowExists(t, destination, `SELECT 1 FROM secret_versions WHERE id=$1 AND erased_at IS NULL`, versions[len(versions)-1]) {
-		t.Fatal("the import lost the secret's current value")
+	for _, current := range []uuid.UUID{versions[len(versions)-1], rotated[0]} {
+		if !rowExists(t, destination, `SELECT 1 FROM secret_versions WHERE id=$1 AND erased_at IS NULL`, current) {
+			t.Fatal("the import lost a secret's current value")
+		}
 	}
 
 	// Recovery from a backup taken before versions 2 and 4 were erased and versions 9 to 15 were

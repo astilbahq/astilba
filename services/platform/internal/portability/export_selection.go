@@ -24,13 +24,13 @@ import (
 //   - everything those rows name, closed over every reference the import checks and every
 //     database foreign key, which can bring in a retired preview environment that something
 //     carried names;
-//   - of each carried secret, its newest 10 versions (newestSecretVersions) and every version a
-//     carried row names (keepNamedSecretVersions).
+//   - of each carried secret, its newest 10 versions and current version (keptSecretVersions), and
+//     every version a carried row names (keepNamedSecretVersions).
 //
 // An export is imported as a new workspace and never merged with older copies, so this is safe
 // in a way it isn't for a recovery base, which chooses its rows itself (baseSelection).
 func exportSelection(ctx context.Context, tx pgx.Tx, ws uuid.UUID) (map[string]string, error) {
-	return selectArchive(ctx, tx, ws, []archiveStep{{exportEnvironments, nil}, {exportSeeds, nil}}, archiveStep{newestSecretVersions, []any{SecretVersionsKept}})
+	return selectArchive(ctx, tx, ws, []archiveStep{{exportEnvironments, nil}, {exportSeeds, nil}}, archiveStep{keptSecretVersions, []any{SecretVersionsKept, false}})
 }
 
 // archiveStep seeds the working set: a statement over $1, the workspace, and its own arguments.
@@ -77,14 +77,15 @@ func selectArchive(ctx context.Context, tx pgx.Tx, ws uuid.UUID, seeds []archive
 // otherwise grow every export and recovery base by a version each time.
 const SecretVersionsKept = 10
 
-// The newest $2 versions of each carried secret, newest by creation as LiveSecretVersion orders
-// them, erased ones included. They include its current version: one newer than it is erased only
-// by retiring the secret or purging its environment, which leave it no current version.
+// Of each carried secret: its newest $2 versions, newest by creation as LiveSecretVersion orders
+// them, erased ones included; its current version, the newest with a value, which a recovery that
+// restored newer ones erased can leave older than those; and, when $3, every erased version.
 // inline-sql: chooses the secret versions in the archive's transaction-local working set
-const newestSecretVersions = `INSERT INTO archive_keep(kind,id) SELECT 'version',x.id FROM (
-	SELECT v.id,row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) n FROM secret_versions v
+const keptSecretVersions = `INSERT INTO archive_keep(kind,id) SELECT 'version',x.id FROM (
+	SELECT v.id,v.erased_at,row_number() OVER (PARTITION BY v.secret_id ORDER BY v.created_at DESC,v.id DESC) n,
+		row_number() OVER (PARTITION BY v.secret_id,v.erased_at IS NULL ORDER BY v.created_at DESC,v.id DESC) live FROM secret_versions v
 	JOIN secrets s ON s.workspace_id=v.workspace_id AND s.id=v.secret_id JOIN archive_keep k ON k.kind='env' AND k.id=s.environment_id
-	WHERE v.workspace_id=$1) x WHERE x.n<=$2 ON CONFLICT DO NOTHING`
+	WHERE v.workspace_id=$1) x WHERE x.n<=$2 OR (x.erased_at IS NULL AND x.live=1) OR ($3 AND x.erased_at IS NOT NULL) ON CONFLICT DO NOTHING`
 
 // keepNamedSecretVersions adds to the selection the versions of carried secrets in named, the IDs
 // the archive's other rows name. No foreign key points at a secret version, so a capture finds them
