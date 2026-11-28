@@ -255,7 +255,7 @@ func (e *Engine) prepareUpgrade(ctx context.Context, c api.ExecutionCommand, s *
 	}
 	e.point("upgrade-isolate-effect")
 	isolated := pgClient{container: created.ID}
-	if err = e.upgradeDatabaseChecks(ctx, isolated, a); err != nil {
+	if err = e.upgradeDatabaseChecks(ctx, isolated, a, to); err != nil {
 		return err
 	}
 	if err = e.upgradeStep(c, s, "backup"); err != nil {
